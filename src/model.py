@@ -8,9 +8,25 @@ import joblib
 import pandas as pd
 import numpy as np
 from sklearn.metrics import classification_report, f1_score
-from xgboost import XGBClassifier, XGBRegressor
+from sklearn.dummy import DummyClassifier, DummyRegressor
 
-FEATURE_NAMES = ["gc_content", "codon_adaptation_index", "mrna_folding_stability"]
+try:
+    from xgboost import XGBClassifier, XGBRegressor
+except ImportError:
+    XGBClassifier = Any
+    XGBRegressor = Any
+
+FEATURE_NAMES = ["GC_percent", "CAI", "folding_energy"]
+
+def train_dummy_classifier(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    strategy: str = "most_frequent"
+) -> DummyClassifier:
+    """Train a simple dummy model baseline for end-to-end pipeline validation."""
+    model = DummyClassifier(strategy=strategy, random_state=42)
+    model.fit(X_train, y_train)
+    return model
 
 def train_baseline_classifier(
     X_train: pd.DataFrame,
@@ -33,7 +49,7 @@ def train_baseline_classifier(
 def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, Any]:
     """Evaluate model performance on test set."""
     preds = model.predict(X_test)
-    report = classification_report(y_test, preds, output_dict=True)
+    report = classification_report(y_test, preds, output_dict=True, zero_division=0)
     return report
 
 def save_model(model: Any, filepath: str) -> None:
@@ -44,3 +60,4 @@ def save_model(model: Any, filepath: str) -> None:
 def load_model(filepath: str) -> Any:
     """Load model artifact from disk."""
     return joblib.load(filepath)
+
