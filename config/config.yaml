@@ -1,0 +1,28 @@
+project_name: "SynthBio"
+target_host: "E. coli"
+
+features:
+  core:
+    - gc_content
+    - codon_adaptation_index
+    - mrna_folding_stability
+  gc_bounds:
+    min: 30.0
+    max: 70.0
+    optimal_min: 45.0
+    optimal_max: 55.0
+
+model:
+  type: "xgboost" # xgboost or lightgbm
+  task: "classification" # classification or regression
+  target_column: "expression_tier" # high/medium/low
+  params:
+    n_estimators: 100
+    learning_rate: 0.05
+    max_depth: 4
+    random_state: 42
+
+paths:
+  raw_data: "data/raw/"
+  processed_data: "data/processed/"
+  model_dir: "models/"
