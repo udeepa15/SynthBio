@@ -75,16 +75,91 @@ def estimate_mrna_folding_stability(sequence: str) -> float:
     return round(mfe, 2)
 
 
+def calculate_protein_features(sequence: str) -> Dict[str, float]:
+    """
+    Translate DNA sequence to amino acid sequence (stopping at first stop codon)
+    and compute protein-level features:
+    - GRAVY score (hydrophobicity)
+    - Isoelectric Point (pI)
+    Handles translation errors or malformed sequences gracefully by returning NaN.
+    """
+    if not isinstance(sequence, str) or not sequence.strip():
+        return {"gravy_score": float("nan"), "pI": float("nan")}
+
+    try:
+        from Bio.Seq import Seq
+        from Bio.SeqUtils.ProtParam import ProteinAnalysis
+
+        seq = sequence.upper().replace(" ", "").replace("\n", "")
+        # Translate to amino acid sequence stopping at first stop codon
+        seq_obj = Seq(seq)
+        protein_seq = str(seq_obj.translate(to_stop=True))
+
+        # Check for non-empty sequence and valid standard amino acids
+        if not protein_seq or any(c in protein_seq for c in ("*", "X", "J", "O", "U", "B", "Z")):
+            # If protein sequence is empty or has non-standard/ambiguous amino acids that ProtParam cannot handle
+            # Filter out non-standard amino acids if possible, or fall back to nan
+            clean_protein = "".join([c for c in protein_seq if c in "ACDEFGHIKLMNPQRSTVWY"])
+            if not clean_protein:
+                return {"gravy_score": float("nan"), "pI": float("nan")}
+            protein_seq = clean_protein
+
+        analyzer = ProteinAnalysis(protein_seq)
+        gravy = round(analyzer.gravy(), 4)
+        pi = round(analyzer.isoelectric_point(), 4)
+        return {"gravy_score": gravy, "pI": pi}
+    except Exception:
+        return {"gravy_score": float("nan"), "pI": float("nan")}
+
+
 def extract_features(sequence: str) -> Dict[str, float]:
-    """Extract all 3 core computed features for a given gene sequence."""
-    return {
+    """Extract all computed features (GC%, CAI, MFE, GRAVY, pI) for a given gene sequence."""
+    features = {
         "gc_content": calculate_gc_content(sequence),
         "codon_adaptation_index": calculate_cai(sequence),
         "mrna_folding_stability": estimate_mrna_folding_stability(sequence)
     }
+    protein_feats = calculate_protein_features(sequence)
+    features.update(protein_feats)
+    return features
 
 
 def extract_features_df(df: pd.DataFrame, sequence_col: str = "sequence") -> pd.DataFrame:
     """Batch extract core features for a pandas DataFrame of sequences."""
     features_list = df[sequence_col].apply(extract_features).tolist()
     return pd.DataFrame(features_list)
+
+
+def fetch_ncbi_sequence(accession_id: str, email: str = "synthbio@example.com") -> str:
+    """
+    Fetch nucleotide FASTA sequence from NCBI Nucleotide database using accession number
+    (e.g., NC_000913.3, M19447, NM_001101).
+    """
+    acc = accession_id.strip().upper()
+    if not acc:
+        return ""
+    
+    # Try BioPython Entrez first
+    try:
+        from Bio import Entrez, SeqIO
+        Entrez.email = email
+        handle = Entrez.efetch(db="nuccore", id=acc, rettype="fasta", retmode="text")
+        record = SeqIO.read(handle, "fasta")
+        handle.close()
+        return str(record.seq).upper()
+    except Exception:
+        pass
+
+    # Fallback to direct HTTP request to NCBI eutils API
+    try:
+        import urllib.request
+        url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id={acc}&rettype=fasta&retmode=text"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            fasta_data = response.read().decode('utf-8')
+            lines = fasta_data.strip().split('\n')
+            seq = "".join(line.strip() for line in lines if not line.startswith(">"))
+            return seq.upper()
+    except Exception as e:
+        raise ValueError(f"Failed to fetch sequence from NCBI for accession '{acc}': {str(e)}")
+

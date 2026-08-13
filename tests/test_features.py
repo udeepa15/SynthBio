@@ -21,3 +21,10 @@ def test_extract_features():
     assert "gc_content" in features
     assert "codon_adaptation_index" in features
     assert "mrna_folding_stability" in features
+
+def test_fetch_ncbi_sequence():
+    from src.features import fetch_ncbi_sequence
+    # Test invalid accession raises ValueError gracefully
+    with pytest.raises(ValueError):
+        fetch_ncbi_sequence("INVALID_ACCESSION_99999999")
+
