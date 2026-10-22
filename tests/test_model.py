@@ -2,6 +2,8 @@ import pytest
 import pandas as pd
 import numpy as np
 from src.predict import predict_construct, calculate_failure_risk
+from src.model import train_baseline_classifier, cross_validate_model, get_shap_explainer, explain_prediction_shap
+
 def test_cross_validation():
     X = pd.DataFrame({
         "GC_percent": np.random.uniform(40, 60, 20),
@@ -18,11 +20,11 @@ def test_cross_validation():
 
 def test_shap_explanation():
     X = pd.DataFrame({
-        "GC_percent": [50.0, 45.0, 55.0],
-        "CAI": [0.8, 0.7, 0.85],
-        "folding_energy": [-5.0, -10.0, -3.0]
+        "GC_percent": [50.0, 45.0, 55.0, 40.0],
+        "CAI": [0.8, 0.7, 0.85, 0.5],
+        "folding_energy": [-5.0, -10.0, -3.0, -18.0]
     })
-    y = pd.Series([2, 1, 2])
+    y = pd.Series([0, 1, 0, 2])
     model = train_baseline_classifier(X, y)
     explainer = get_shap_explainer(model)
     if explainer is not None:

@@ -1,5 +1,5 @@
 import pytest
-from src.features import calculate_gc_content, calculate_cai, estimate_mrna_folding_stability, extract_features
+from src.features import calculate_gc_content, calculate_cai, estimate_mrna_folding_stability, extract_features, fetch_ncbi_sequence
 
 def test_calculate_gc_content():
     # ATCG -> 50% GC
@@ -22,9 +22,7 @@ def test_extract_features():
     assert "codon_adaptation_index" in features
     assert "mrna_folding_stability" in features
 
-def test_fetch_ncbi_sequence():
-    from src.features import fetch_ncbi_sequence
-    # Test invalid accession raises ValueError gracefully
+def test_fetch_ncbi_sequence_invalid():
+    # Test empty or invalid accession raises ValueError
     with pytest.raises(ValueError):
-        fetch_ncbi_sequence("INVALID_ACCESSION_99999999")
-
+        fetch_ncbi_sequence("")

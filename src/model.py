@@ -4,6 +4,8 @@ Model training and evaluation module for gradient boosting baseline models (XGBo
 
 from typing import Dict, Any, Tuple
 import os
+import logging
+import warnings
 import joblib
 import pandas as pd
 import numpy as np
@@ -12,16 +14,29 @@ from sklearn.dummy import DummyClassifier, DummyRegressor
 from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.ensemble import RandomForestClassifier
 
+# Configure logger
+logger = logging.getLogger("SynthBio.model")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] [SynthBio.model] %(message)s", datefmt="%H:%M:%S")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
 try:
     from xgboost import XGBClassifier, XGBRegressor
+    logger.info("XGBoost library detected and imported successfully.")
 except ImportError:
     XGBClassifier = RandomForestClassifier
     XGBRegressor = None
+    logger.warning("XGBoost library not found. Falling back to RandomForestClassifier.")
 
 try:
     import shap
+    logger.info("SHAP library detected and imported successfully.")
 except ImportError:
     shap = None
+    logger.warning("SHAP library not found. Explainable AI (XAI) waterfall rendering will be disabled.")
 
 FEATURE_NAMES = ["GC_percent", "CAI", "folding_energy"]
 
@@ -32,16 +47,19 @@ def train_dummy_classifier(
     strategy: str = "most_frequent"
 ) -> DummyClassifier:
     """Train a simple dummy model baseline for end-to-end pipeline validation."""
+    logger.info(f"Training DummyClassifier with strategy='{strategy}' on {len(X_train)} samples...")
     model = DummyClassifier(strategy=strategy, random_state=42)
     model.fit(X_train, y_train)
+    logger.info("DummyClassifier training complete.")
     return model
+
 
 def train_baseline_classifier(
     X_train: pd.DataFrame,
     y_train: pd.Series,
     params: Dict[str, Any] = None
 ) -> Any:
-    """Train baseline gradient boosted / random forest classifier on 3 core features."""
+    """Train baseline gradient boosted / random forest classifier on core features."""
     if params is None:
         params = {
             "n_estimators": 100,
@@ -50,6 +68,9 @@ def train_baseline_classifier(
             "random_state": 42
         }
         
+    model_name = "RandomForestClassifier" if XGBClassifier == RandomForestClassifier else "XGBClassifier"
+    logger.info(f"Fitting {model_name} on {X_train.shape[0]} samples with features {list(X_train.columns)}...")
+    
     if XGBClassifier == RandomForestClassifier:
         clf_params = {k: v for k, v in params.items() if k != "learning_rate"}
     else:
@@ -57,6 +78,7 @@ def train_baseline_classifier(
         
     model = XGBClassifier(**clf_params)
     model.fit(X_train, y_train)
+    logger.info(f"{model_name} model fit successfully.")
     return model
 
 
@@ -68,11 +90,12 @@ def cross_validate_model(
     random_state: int = 42
 ) -> Dict[str, float]:
     """Perform Stratified K-Fold Cross-Validation for small dataset reliability."""
+    logger.info(f"Running {n_splits}-Fold Stratified Cross-Validation...")
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     scoring = ['accuracy', 'f1_macro', 'precision_macro', 'recall_macro']
     cv_results = cross_validate(model, X, y, cv=cv, scoring=scoring)
     
-    return {
+    metrics = {
         "mean_accuracy": float(np.mean(cv_results['test_accuracy'])),
         "std_accuracy": float(np.std(cv_results['test_accuracy'])),
         "mean_f1_macro": float(np.mean(cv_results['test_f1_macro'])),
@@ -80,46 +103,89 @@ def cross_validate_model(
         "mean_precision": float(np.mean(cv_results['test_precision_macro'])),
         "mean_recall": float(np.mean(cv_results['test_recall_macro'])),
     }
+    logger.info(
+        f"CV Results -> Accuracy: {metrics['mean_accuracy']*100:.2f}% (±{metrics['std_accuracy']*100:.2f}%), "
+        f"Macro F1: {metrics['mean_f1_macro']:.3f}"
+    )
+    return metrics
+
 
 def get_shap_explainer(model: Any) -> Any:
     """Initialize SHAP TreeExplainer for feature importance interpretation."""
     if shap is None:
+        logger.warning("Cannot initialize SHAP TreeExplainer: `shap` package is not available.")
         return None
     try:
-        return shap.TreeExplainer(model)
-    except Exception:
+        logger.info("Initializing SHAP TreeExplainer for model...")
+        explainer = shap.TreeExplainer(model)
+        logger.info("SHAP TreeExplainer initialized successfully.")
+        return explainer
+    except Exception as err:
+        logger.error(f"Failed to initialize SHAP TreeExplainer: {str(err)}", exc_info=False)
         return None
+
 
 def explain_prediction_shap(explainer: Any, X_sample: pd.DataFrame) -> Dict[str, float]:
     """Extract local SHAP feature importances for a sample dataframe."""
     if explainer is None or shap is None:
         return {}
     try:
-        shap_values = explainer.shap_values(X_sample)
-        if isinstance(shap_values, list):
-            # For multi-class, average absolute SHAP values across classes
-            mean_abs_shap = np.mean([np.abs(sv).mean(axis=0) for sv in shap_values], axis=0)
+        logger.info(f"Extracting SHAP feature importances for sample feature vector...")
+        shap_exp = explainer(X_sample)
+        vals = shap_exp.values
+        
+        # If multi-class 3D array (samples, features, classes), average across classes and samples
+        if hasattr(vals, "ndim") and vals.ndim == 3:
+            mean_abs = np.abs(vals).mean(axis=(0, 2))
+        elif hasattr(vals, "ndim") and vals.ndim == 2:
+            mean_abs = np.abs(vals).mean(axis=0)
+        elif isinstance(vals, list):
+            mean_abs = np.mean([np.abs(v).mean(axis=0) for v in vals], axis=0)
         else:
-            mean_abs_shap = np.abs(shap_values).mean(axis=0)
+            mean_abs = np.abs(vals).flatten()
             
         feature_names = X_sample.columns.tolist()
-        return {feature_names[i]: float(mean_abs_shap[i]) for i in range(len(feature_names))}
-    except Exception:
+        result = {feature_names[i]: float(mean_abs[i]) for i in range(min(len(feature_names), len(mean_abs)))}
+        logger.info(f"SHAP importances computed: {result}")
+        return result
+    except Exception as err:
+        logger.error(f"SHAP explanation computation failed: {str(err)}", exc_info=False)
         return {}
+
 
 def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[str, Any]:
     """Evaluate model performance on test set."""
+    logger.info(f"Evaluating model on {len(X_test)} test samples...")
     preds = model.predict(X_test)
     report = classification_report(y_test, preds, output_dict=True, zero_division=0)
+    acc = report.get("accuracy", 0.0)
+    logger.info(f"Test Set Evaluation Complete -> Accuracy: {acc*100:.2f}%")
     return report
+
 
 def save_model(model: Any, filepath: str) -> None:
     """Save trained model artifact to disk."""
+    logger.info(f"Saving trained model artifact to '{filepath}'...")
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     joblib.dump(model, filepath)
+    logger.info("Model artifact saved successfully.")
+
 
 def load_model(filepath: str) -> Any:
-    """Load model artifact from disk."""
-    return joblib.load(filepath)
-
-
+    """Load model artifact from disk with version warning handling."""
+    logger.info(f"Loading trained model artifact from '{filepath}'...")
+    if not os.path.exists(filepath):
+        logger.error(f"Model artifact file not found at path: {filepath}")
+        raise FileNotFoundError(f"Model file '{filepath}' does not exist.")
+    
+    try:
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            model = joblib.load(filepath)
+            for warning in w:
+                logger.warning(f"Unpickling Warning: {warning.message}")
+        logger.info(f"Successfully loaded model artifact: {type(model).__name__}")
+        return model
+    except Exception as err:
+        logger.error(f"Failed to load model artifact from '{filepath}': {str(err)}")
+        raise err
