@@ -2,6 +2,11 @@
 Explainable AI (XAI) Module for SynthBio Streamlit Application.
 Provides SHAP TreeExplainer integration and Waterfall Plot visualization
 with dynamic natural language summaries and biological explanations for single construct predictions.
+
+The model is a six-class tier classifier, so a SHAP value is an attribution
+toward the predicted tier, not toward failure. A positive value therefore means
+"more of this tier", which is unfavourable only when the predicted tier is
+itself low. Labels below are derived from the predicted tier for that reason.
 """
 
 from typing import Any, Optional, Dict
@@ -38,8 +43,8 @@ FEATURE_BIO_MAP = {
         "low_desc": "Low CAI indicates rare codons that stall translation ribosomes, leading to premature termination or low yield."
     },
     "folding_energy": {
-        "name": "mRNA Folding Stability (MFE)",
-        "high_desc": "Strong negative MFE indicates tight 5' hairpins near the Shine-Dalgarno / start codon site that physically block ribosome binding.",
+        "name": "5' folding proxy (GC-derived, not thermodynamic)",
+        "high_desc": "A strongly negative proxy value indicates a GC-rich 5' region, taken to imply tight hairpins near the start codon that obstruct ribosome binding.",
         "low_desc": "Relaxed MFE allows open 5' mRNA conformation for efficient ribosome loading."
     },
     "gravy_score": {
@@ -55,20 +60,65 @@ FEATURE_BIO_MAP = {
 }
 
 
-def render_shap_waterfall(model: Any, input_df: pd.DataFrame) -> None:
+LOW_TIER_CEILING = 2  # Tiers 0-2 are low-expression outcomes.
+
+# Reference points separating a "high" from a "low" value for each feature.
+# The biological blurbs describe what a high or low VALUE does, so they must be
+# selected from the value, never from the sign of the attribution: a feature can
+# be strong evidence for a low tier while its own value is favourable.
+FEATURE_VALUE_MIDPOINT = {
+    "GC_percent": 55.0,
+    "CAI": 0.70,
+    "folding_energy": -20.0,
+    "gravy_score": 0.0,
+    "pI": 7.4,
+}
+
+
+def describe_feature_value(feature: str, value: Optional[float]) -> str:
+    """Biological note for a feature, chosen from its value rather than its SHAP sign."""
+    meta = FEATURE_BIO_MAP.get(feature)
+    if meta is None:
+        return ""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return ""
+    midpoint = FEATURE_VALUE_MIDPOINT.get(feature)
+    if midpoint is None:
+        return ""
+    # folding_energy runs negative: a value below the midpoint is the "high" case.
+    is_high = value < midpoint if feature == "folding_energy" else value > midpoint
+    return meta["high_desc"] if is_high else meta["low_desc"]
+
+
+def tier_is_unfavourable(predicted_class: Optional[int]) -> Optional[bool]:
     """
-    Render a SHAP Waterfall Plot inside a large expander for a single construct prediction in Streamlit using matplotlib,
-    accompanied by sub-columns with white background chart and a 1-sentence dynamic summary.
+    Whether the predicted tier is itself a poor outcome.
+
+    Returns None when the tier is unknown, in which case attribution is
+    described neutrally rather than as a failure or a success driver.
     """
-    with st.expander("🧬 Explainable AI (XAI) — SHAP Feature Attribution", expanded=False):
+    if predicted_class is None:
+        return None
+    return predicted_class <= LOW_TIER_CEILING
+
+
+def render_shap_waterfall(model: Any, input_df: pd.DataFrame, predicted_class: Optional[int] = None) -> None:
+    """
+    Render a SHAP Waterfall Plot for a single construct prediction.
+
+    `predicted_class` is the tier the model assigned. It decides whether a
+    positive attribution is described as driving a poor outcome or a good one;
+    without it the attribution is described without a verdict attached.
+    """
+    with st.expander("Feature attribution (SHAP)", expanded=False):
         if shap is None:
             logger.warning("SHAP rendering requested but `shap` package is not installed.")
-            st.warning("⚠️ SHAP library is not installed. Please run `python -m pip install shap` to enable interactive XAI waterfall plots.")
+            st.warning("SHAP is not installed, so attribution is unavailable. Install it with `python -m pip install shap`.")
             return
 
         if model is None or not hasattr(model, "predict"):
             logger.info("SHAP waterfall rendering skipped: Running in heuristic mode without a trained model artifact.")
-            st.info("ℹ️ Running in heuristic mode without a loaded model artifact. Train or load a model artifact to generate SHAP Waterfall plots.")
+            st.info("Attribution requires a trained model. The figures above came from biophysical rules, which have no attribution to show.")
             return
 
         try:
@@ -86,22 +136,24 @@ def render_shap_waterfall(model: Any, input_df: pd.DataFrame) -> None:
             explanation = explainer(eval_df)
             sample_exp = explanation[0]
 
-            pred_class = 0
-            if hasattr(model, "predict"):
+            pred_class = predicted_class
+            if pred_class is None:
                 try:
                     pred_class = int(model.predict(eval_df)[0])
                 except Exception:
-                    pred_class = 0
+                    logger.warning("Could not determine the predicted tier for attribution labelling.")
+                    pred_class = None
 
             if len(sample_exp.shape) > 1:
-                class_idx = min(pred_class, sample_exp.shape[1] - 1)
+                class_idx = min(pred_class if pred_class is not None else 0, sample_exp.shape[1] - 1)
                 sample_exp = sample_exp[:, class_idx]
 
             # Sub-columns: Left 1.5 width (Chart), Right 1 width (Analysis)
             sub_col1, sub_col2 = st.columns([1.5, 1])
 
             with sub_col1:
-                st.markdown("### 📈 Local Feature Waterfall Chart")
+                tier_note = f" for Tier {pred_class}" if pred_class is not None else ""
+                st.markdown(f"**Attribution for this construct{tier_note}**")
                 fig, ax = plt.subplots(figsize=(7.5, 4.2))
                 fig.patch.set_facecolor('white')
                 ax.set_facecolor('white')
@@ -122,58 +174,86 @@ def render_shap_waterfall(model: Any, input_df: pd.DataFrame) -> None:
             top_increasing_feature = feature_names[max_pos_idx] if shap_values[max_pos_idx] > 0 else None
             top_decreasing_feature = feature_names[max_neg_idx] if shap_values[max_neg_idx] < 0 else None
 
+            # A positive SHAP value is evidence FOR the predicted tier. Whether
+            # that is bad news depends on which tier was predicted, so the
+            # labels are chosen from the tier rather than from the sign alone.
+            unfavourable = tier_is_unfavourable(pred_class)
+            tier_phrase = f"Tier {pred_class}" if pred_class is not None else "the predicted tier"
+
+            if unfavourable is True:
+                toward_label = f"Strongest evidence for {tier_phrase}, a low-expression outcome"
+            elif unfavourable is False:
+                toward_label = f"Strongest evidence for {tier_phrase}, an acceptable-expression outcome"
+            else:
+                toward_label = "Strongest evidence for the predicted tier"
+            away_label = f"Strongest evidence against {tier_phrase}"
+
+            # Feature values, used for the biological notes.
+            values = {c: float(eval_df.iloc[0][c]) for c in eval_df.columns}
+
             with sub_col2:
-                st.markdown("### 💡 Detailed Result & Biological Analysis")
-                st.markdown(f"• **Base Expected Score ($E[f(X)]$):** `{base_value:.2f}` (Baseline expectation across training constructs).")
+                st.markdown("**Reading the attribution**")
+                st.markdown(
+                    f"Baseline model output across the training constructs: `{base_value:.2f}`. "
+                    f"The bars show how this construct's features moved the output away from that baseline "
+                    f"for {tier_phrase}."
+                )
 
                 if top_increasing_feature:
-                    feat_meta = FEATURE_BIO_MAP.get(top_increasing_feature, {"name": top_increasing_feature, "high_desc": "Pushes failure risk higher."})
+                    name = FEATURE_BIO_MAP.get(top_increasing_feature, {}).get("name", top_increasing_feature)
+                    note = describe_feature_value(top_increasing_feature, values.get(top_increasing_feature))
                     st.markdown(
-                        f"🔴 **Primary Failure Risk Driver**: <span style='color:#FF4B4B; font-weight:bold;'>{feat_meta['name']}</span> (`+{shap_values[max_pos_idx]:.3f} SHAP`)\n\n"
-                        f"*{feat_meta['high_desc']}*",
-                        unsafe_allow_html=True
+                        f"▲ **{toward_label}**: {name} (`+{shap_values[max_pos_idx]:.3f} SHAP`)"
+                        + (f"\n\n*{note}*" if note else "")
                     )
 
                 if top_decreasing_feature:
-                    feat_meta_dec = FEATURE_BIO_MAP.get(top_decreasing_feature, {"name": top_decreasing_feature, "low_desc": "Helps lower failure risk."})
+                    name_dec = FEATURE_BIO_MAP.get(top_decreasing_feature, {}).get("name", top_decreasing_feature)
+                    note_dec = describe_feature_value(top_decreasing_feature, values.get(top_decreasing_feature))
                     st.markdown(
-                        f"🔵 **Primary Favorable Factor**: <span style='color:#0068C9; font-weight:bold;'>{feat_meta_dec['name']}</span> (`{shap_values[max_neg_idx]:.3f} SHAP`)\n\n"
-                        f"*{feat_meta_dec['low_desc']}*",
-                        unsafe_allow_html=True
+                        f"▼ **{away_label}**: {name_dec} (`{shap_values[max_neg_idx]:.3f} SHAP`)"
+                        + (f"\n\n*{note_dec}*" if note_dec else "")
                     )
 
-                with st.expander("📖 How to Read This SHAP Chart", expanded=False):
+                with st.expander("How to read this chart", expanded=False):
                     st.markdown(
-                        """
-                        - **Base Value ($E[f(X)]$)**: Average model output score across all baseline training constructs.
-                        - **Red Bars ($+\\text{SHAP}$)**: Feature values that push prediction score toward lower expression / higher risk.
-                        - **Blue Bars ($-\\text{SHAP}$)**: Feature values that pull prediction score toward higher expression / lower risk.
-                        - **Final Output ($f(x)$)**: Final calculated model score for this specific construct.
+                        f"""
+                        - **Baseline ($E[f(X)]$)**: the model's average output for {tier_phrase} across the training constructs.
+                        - **Bars pointing right ($+$SHAP)**: this feature's value is evidence *for* {tier_phrase}.
+                        - **Bars pointing left ($-$SHAP)**: this feature's value is evidence *against* {tier_phrase}.
+                        - **Final output ($f(x)$)**: the model's output for {tier_phrase} for this construct.
+
+                        A positive bar is not in itself a warning. It means more of the tier that was
+                        predicted, which is unwelcome only when that tier is a low one.
                         """
                     )
 
-            # Single-sentence blue st.info box below sub-columns
+            top_name = FEATURE_BIO_MAP.get(top_increasing_feature, {}).get("name", top_increasing_feature)
+            bottom_name = FEATURE_BIO_MAP.get(top_decreasing_feature, {}).get("name", top_decreasing_feature)
+
             if top_increasing_feature and top_decreasing_feature:
                 summary_sentence = (
-                    f"The feature that increased construct failure risk the most was **{FEATURE_BIO_MAP.get(top_increasing_feature, {}).get('name', top_increasing_feature)}** "
-                    f"(+{shap_values[max_pos_idx]:.3f}), while **{FEATURE_BIO_MAP.get(top_decreasing_feature, {}).get('name', top_decreasing_feature)}** "
-                    f"helped lower the risk ({shap_values[max_neg_idx]:.3f})."
+                    f"**{top_name}** was the strongest evidence for {tier_phrase} "
+                    f"(+{shap_values[max_pos_idx]:.3f}), and **{bottom_name}** the strongest evidence against it "
+                    f"({shap_values[max_neg_idx]:.3f})."
                 )
             elif top_increasing_feature:
                 summary_sentence = (
-                    f"The feature that increased construct failure risk the most was **{FEATURE_BIO_MAP.get(top_increasing_feature, {}).get('name', top_increasing_feature)}** "
+                    f"**{top_name}** was the strongest evidence for {tier_phrase} "
                     f"(+{shap_values[max_pos_idx]:.3f})."
                 )
             elif top_decreasing_feature:
                 summary_sentence = (
-                    f"The feature that helped lower construct failure risk the most was **{FEATURE_BIO_MAP.get(top_decreasing_feature, {}).get('name', top_decreasing_feature)}** "
+                    f"**{bottom_name}** was the strongest evidence against {tier_phrase} "
                     f"({shap_values[max_neg_idx]:.3f})."
                 )
             else:
-                summary_sentence = "All biophysical features contributed balanced baseline values to the final prediction output."
+                summary_sentence = (
+                    f"No feature moved the output appreciably away from the baseline for {tier_phrase}."
+                )
 
-            st.info(f"💡 **SHAP Summary**: {summary_sentence}")
-            logger.info(f"XAI 1-sentence summary: {summary_sentence}")
+            st.info(summary_sentence)
+            logger.info(f"XAI summary (tier={pred_class}, unfavourable={unfavourable}): {summary_sentence}")
 
         except Exception as err:
             logger.error(f"Error rendering SHAP Waterfall plot: {str(err)}", exc_info=True)

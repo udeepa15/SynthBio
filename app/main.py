@@ -1,7 +1,10 @@
 """
-Streamlit Web Interface for SynthBio: Construct Failure Predictor.
-Provides a modern, dark-mode dashboard layout for evaluating gene construct failure risk,
-predicting expression tiers, extracting 5 biophysical features, and visualizing SHAP attributions.
+Streamlit interface for SynthBio: Construct Failure Predictor.
+
+Layout is a single vertical hierarchy: one verdict, then its provenance, then
+the five computed features, then the biological diagnostics, then the model's
+feature attribution. There is deliberately no two-column split of verdict
+against features, so that the screen carries one answer rather than two.
 """
 
 import streamlit as st
@@ -10,7 +13,6 @@ import numpy as np
 import sys
 import os
 import logging
-import traceback
 
 # Add root project path to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -26,258 +28,341 @@ if not logger.handlers:
 
 from src.predict import predict_construct
 from src.model import load_model, get_shap_explainer
-from src.features import fetch_ncbi_sequence
+from src.features import fetch_ncbi_sequence, FOLDING_WINDOW_NT
 from src.xai import render_shap_waterfall
+from src.validation import validate_sequence, blocking_issues, advisory_issues, is_scorable
+from src import provenance as prov_mod
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "baseline_model.joblib")
+
+SAMPLE_SEQUENCE = (
+    "ATGAAACGCATTAGCCTGACCCTGCTGAGCGCGGCGATTCTGCTGACCGCGCTGAGCGCG"
+)
+
+# Verdict states. Each carries a text label and a distinct glyph, so the state
+# is legible without relying on the colour of the band.
+VERDICT_STATES = {
+    "low": {"label": "LOW RISK", "glyph": "●", "icon": "✅"},
+    "moderate": {"label": "MODERATE RISK", "glyph": "◆", "icon": "⚠️"},
+    "high": {"label": "HIGH RISK", "glyph": "▲", "icon": "⛔"},
+}
+
 
 @st.cache_resource
 def load_trained_artifacts():
-    model_path = os.path.join(os.path.dirname(__file__), "..", "models", "baseline_model.joblib")
-    logger.info(f"Checking for trained model artifact at '{model_path}'...")
-    if os.path.exists(model_path):
+    logger.info(f"Checking for trained model artifact at '{MODEL_PATH}'...")
+    if os.path.exists(MODEL_PATH):
         try:
-            logger.info("Attempting to unpickle and load model artifact...")
-            model = load_model(model_path)
-            logger.info("Model loaded successfully. Initializing SHAP TreeExplainer...")
+            model = load_model(MODEL_PATH)
+            logger.info("Model loaded. Initializing SHAP TreeExplainer...")
             explainer = get_shap_explainer(model)
-            logger.info("Artifact loading pipeline complete.")
             return model, explainer
         except Exception as err:
-            logger.error(f"Failed to load model artifact: {str(err)}", exc_info=True)
-            logger.warning("Application will fall back to biophysical heuristic prediction mode.")
+            logger.error(f"Failed to load model artifact: {err}", exc_info=True)
+            logger.warning("Falling back to biophysical heuristic prediction mode.")
             return None, None
-    else:
-        logger.warning(f"No model artifact found at '{model_path}'. Running in heuristic prediction mode.")
-        return None, None
+    logger.warning(f"No model artifact at '{MODEL_PATH}'. Running in heuristic mode.")
+    return None, None
 
-def inject_custom_css():
-    """Inject modern dark-mode glassmorphism CSS styling for UI polish."""
-    st.markdown(
-        """
-        <style>
-        /* Modern Dark Theme Metric Cards */
-        [data-testid="stMetricValue"] {
-            font-size: 1.6rem !important;
-            font-weight: 700 !important;
-            color: #00E5FF !important;
-        }
-        [data-testid="stMetricLabel"] {
-            font-size: 0.95rem !important;
-            font-weight: 600 !important;
-            color: #A0AAB8 !important;
-        }
-        div[data-testid="metric-container"] {
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 14px 18px;
-            border-radius: 10px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-            transition: transform 0.2s ease, border-color 0.2s ease;
-        }
-        div[data-testid="metric-container"]:hover {
-            transform: translateY(-2px);
-            border-color: #00E5FF;
-        }
-        /* Tab Styling */
-        button[data-baseweb="tab"] {
-            font-size: 1.05rem !important;
-            font-weight: 600 !important;
-        }
-        /* Expander Header Polish */
-        .streamlit-expanderHeader {
-            font-size: 1.1rem !important;
-            font-weight: 600 !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
+
+def render_figure(container, value: str, label: str, note: str = "") -> None:
+    """
+    One figure with its full label.
+
+    st.metric truncates a long label to a single clipped line, which is how
+    "5' folding proxy (48 nt)" became "5' folding proxy …" and hid the very
+    qualification it exists to carry. A heading plus a caption wraps instead,
+    so the label stays readable at any column width, using native elements
+    rather than injected CSS.
+    """
+    container.markdown(f"### {value}")
+    container.caption(label)
+    if note:
+        container.caption(note)
+
+
+def risk_state(risk: float) -> str:
+    """Map the risk figure to a verdict state."""
+    if risk < 30.0:
+        return "low"
+    if risk < 60.0:
+        return "moderate"
+    return "high"
+
+
+def render_verdict(res: dict, prov) -> None:
+    """
+    The single verdict band: tier, risk state and provenance.
+
+    Note: the risk figure and the tier are computed independently today, the
+    risk from a biophysical penalty sum and the tier from the model. Making
+    one quantity drive both is tracked as a separate change; this function is
+    the one place the band is rendered, so that change lands here.
+    """
+    risk = res["risk_score"]
+    state = risk_state(risk)
+    meta = VERDICT_STATES[state]
+
+    st.markdown(f"### {meta['glyph']} {meta['label']} — construct failure risk {risk}%")
+
+    banner = {"low": st.success, "moderate": st.warning, "high": st.error}[state]
+    banner(
+        f"**{meta['label']}** ({risk}% failure risk)  ·  "
+        f"Predicted expression tier: **{res['predicted_tier']}**",
+        icon=meta["icon"],
     )
 
+    tier_cols = st.columns(3)
+    render_figure(tier_cols[0], str(res["predicted_tier"]), "Predicted expression tier")
+    render_figure(
+        tier_cols[1], f"{res['predicted_yield']}", "Tier midpoint (arbitrary units)",
+        "Not a measured yield. It is the nominal midpoint assigned to the predicted tier.",
+    )
+    render_figure(
+        tier_cols[2], f"{risk}%", "Construct failure risk",
+        "A fixed penalty rule over GC, CAI and the folding proxy. It does not read the model's tier.",
+    )
+
+    st.caption(prov.as_line())
+    for note in prov.caveats():
+        st.caption(f"Note: {note}")
+
+
+def render_features(res: dict) -> None:
+    """The five computed features, full width, labelled for what they are."""
+    st.markdown("#### Computed features")
+
+    f = res["features"]
+    gravy_score = f.get("gravy_score")
+    pi_value = f.get("pI")
+
+    def fmt(value, suffix=""):
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return "N/A"
+        return f"{value}{suffix}"
+
+    cols = st.columns(5)
+    render_figure(cols[0], fmt(f["gc_content"], "%"), "GC content", "Whole transcript.")
+    render_figure(
+        cols[1], fmt(f["codon_adaptation_index"]), "Codon adaptation index (CAI)",
+        "Against a simplified E. coli K-12 codon table.",
+    )
+    render_figure(
+        cols[2], fmt(f["mrna_folding_stability"]), f"5' folding proxy, kcal/mol ({FOLDING_WINDOW_NT} nt)",
+        "GC-derived proxy, not a thermodynamic MFE. No folding model is evaluated.",
+    )
+    render_figure(
+        cols[3], fmt(gravy_score), "GRAVY (hydrophobicity)",
+        "Grand average of hydropathy over the translated product.",
+    )
+    render_figure(cols[4], fmt(pi_value), "Isoelectric point (pI)", "Of the translated product.")
+
+    if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in (gravy_score, pi_value)):
+        st.caption(
+            "GRAVY and pI read N/A because the sequence could not be translated to a standard "
+            "amino-acid string. The diagnostics below that depend on them are therefore omitted."
+        )
+
+
+def render_diagnostics(res: dict) -> None:
+    """Hardcoded biological heuristics, stated as heuristics."""
+    st.markdown("#### Biological construct diagnostics")
+    st.caption("Fixed threshold rules applied to the computed features, independent of the model.")
+
+    f = res["features"]
+    gravy_score = f.get("gravy_score")
+    pi_value = f.get("pI")
+    has_warning = False
+
+    if gravy_score is not None and not np.isnan(gravy_score) and gravy_score > 0.4:
+        has_warning = True
+        st.warning(
+            f"**Inclusion body risk.** GRAVY is {gravy_score}, above the 0.4 threshold. "
+            "The product is hydrophobic enough that it is likely to partition into insoluble "
+            "inclusion bodies rather than stay in the soluble fraction.",
+            icon="⚠️",
+        )
+
+    if pi_value is not None and not np.isnan(pi_value) and (7.2 <= pi_value <= 7.8):
+        has_warning = True
+        st.warning(
+            f"**Aggregation risk.** The pI of {pi_value} falls inside the E. coli cytoplasmic pH range "
+            "(7.2 to 7.8), so the product carries close to no net charge under expression conditions "
+            "and is prone to aggregation. A charged fusion tag would shift the pI away from this window.",
+            icon="⚠️",
+        )
+
+    cai_val = f["codon_adaptation_index"]
+    mfe_val = f["mrna_folding_stability"]
+    pred_score = res.get("predicted_score")
+    if pred_score is None:
+        pred_score = 0 if "Low" in str(res["predicted_tier"]) else (5 if "High" in str(res["predicted_tier"]) else 3)
+
+    if cai_val > 0.85 and pred_score <= 2 and mfe_val < -15.0:
+        has_warning = True
+        logger.warning("Over-optimization trap detected for user construct.")
+        st.warning(
+            f"**Over-optimisation trap.** CAI is {cai_val}, which is high, yet the predicted tier is "
+            f"{res['predicted_tier']}. Aggressive codon optimisation has raised GC content and so the "
+            "5' folding proxy to " f"{mfe_val} kcal/mol, consistent with hairpins that obstruct ribosome "
+            "entry. Relaxing CAI to open the 5' region is the usual remedy.",
+            icon="⚠️",
+        )
+
+    if not has_warning:
+        st.success(
+            "**No threshold exceeded.** GRAVY, pI and the codon-optimisation check are all inside their "
+            "normal ranges. This covers only those rules; it is not a prediction of success.",
+            icon="✅",
+        )
+
+
+def render_validation_issues(issues) -> None:
+    """Show each validation problem with its cause and its remedy."""
+    for issue in blocking_issues(issues):
+        st.error(f"**{issue.title}.** {issue.detail} {issue.remedy}", icon="⛔")
+    for issue in advisory_issues(issues):
+        st.warning(f"**{issue.title}.** {issue.detail} {issue.remedy}", icon="⚠️")
+
+
 def main():
-    logger.info("Initializing Streamlit Application Page Configuration...")
     st.set_page_config(
         page_title="SynthBio | Construct Failure Predictor",
         page_icon="🧬",
         layout="wide",
-        initial_sidebar_state="expanded"
+        initial_sidebar_state="expanded",
     )
 
-    inject_custom_css()
-
-    # 1. Sidebar Configuration
-    st.sidebar.header("⚙️ Settings & Model Config")
-    target_host = st.sidebar.selectbox(
-        "Select Target Host",
-        ["Escherichia coli (K-12)", "Escherichia coli (BL21)"],
-        index=0
-    )
-    model_arch = st.sidebar.selectbox(
-        "Model Architecture",
-        ["XGBoost Baseline", "LightGBM Baseline"],
-        index=0
-    )
-    
     model, explainer = load_trained_artifacts()
-    if model is not None:
-        st.sidebar.success("✅ Trained Model Loaded (models/baseline_model.joblib)")
-    else:
-        st.sidebar.info("ℹ️ Running in Heuristic Mode (Train model via pipeline)")
+    prov = prov_mod.describe(model, MODEL_PATH if model is not None else None)
 
-    # 2. Main Header & Input Section
-    st.title("🧬 SynthBio: Construct Failure Predictor")
+    # Sidebar
+    st.sidebar.header("Settings")
+    st.sidebar.selectbox("Target host", ["Escherichia coli (K-12)", "Escherichia coli (BL21)"], index=0)
+    st.sidebar.markdown("**Prediction source**")
+    st.sidebar.write(prov.mode_label)
+    if prov.is_trained:
+        st.sidebar.caption(
+            f"{prov.model_class}, built {prov.model_built:%Y-%m-%d}"
+            if prov.model_built else f"{prov.model_class}"
+        )
+    else:
+        st.sidebar.caption("Train a model with the pipeline to replace the heuristic rules.")
+
+    st.title("SynthBio: Construct Failure Predictor")
     st.markdown(
-        "Predict *E. coli* expression yield and evaluate construct failure risk "
-        "using 5 computed biophysical and protein features: **GC%**, **Codon Adaptation Index (CAI)**, "
-        "**mRNA Folding Stability (MFE)**, **GRAVY (Hydrophobicity)**, and **Isoelectric Point (pI)**."
+        "Predicts *E. coli* expression tier and construct failure risk from five computed features: "
+        "GC content, codon adaptation index, a 5' folding proxy, GRAVY and isoelectric point."
     )
 
-    st.subheader("🧪 Input Gene Sequence")
-    tab_raw, tab_ncbi = st.tabs(["📄 Raw DNA Sequence", "🌐 NCBI Accession ID"])
-    
+    # Input
+    st.markdown("#### Input sequence")
+    tab_raw, tab_ncbi = st.tabs(["Raw DNA sequence", "NCBI accession"])
+
     sequence_input = ""
     with tab_raw:
-        sample_seq = "ATGAAACGCATTAGCCTGACCCTGCTGAGCGCGGCGATTCTGCTGACCGCGCTGAGCGCG"
         raw_seq = st.text_area(
-            "Paste DNA Sequence (5' to 3'):",
-            value=sample_seq,
-            height=130
-        ).strip().upper()
+            "Coding DNA sequence, 5' to 3'",
+            value=SAMPLE_SEQUENCE,
+            height=130,
+            help="Must start at the start codon. A sample construct is pre-filled; replace it with your own.",
+        )
         sequence_input = raw_seq
 
     with tab_ncbi:
         accession_id = st.text_input(
-            "Enter NCBI Accession Number:",
+            "NCBI accession number",
             value="",
-            placeholder="e.g., M19447, NM_001101, NC_000913, M15077.1"
+            placeholder="e.g. M19447, J04639.1, NC_000913",
         ).strip()
-        
         if accession_id:
-            logger.info(f"User requested NCBI Accession fetch for ID: '{accession_id}'")
+            logger.info(f"NCBI accession fetch requested for '{accession_id}'")
             try:
-                with st.spinner(f"Fetching FASTA sequence from NCBI for accession '{accession_id}'..."):
+                with st.spinner(f"Fetching '{accession_id}' from NCBI..."):
                     fetched_seq = fetch_ncbi_sequence(accession_id)
-                    if fetched_seq:
-                        st.success(f"Successfully fetched {len(fetched_seq)} bp sequence from NCBI!")
-                        sequence_input = fetched_seq
+                if fetched_seq:
+                    st.success(f"Fetched {len(fetched_seq)} bp from NCBI.")
+                    sequence_input = fetched_seq
             except Exception as err:
-                logger.error(f"NCBI accession lookup failed for '{accession_id}': {str(err)}", exc_info=True)
-                st.error(f"Error fetching NCBI accession: {str(err)}")
+                logger.error(f"NCBI lookup failed for '{accession_id}': {err}", exc_info=True)
+                st.error(f"Could not fetch '{accession_id}' from NCBI: {err}")
 
-    # Sequence preview wrapped inside an expander
-    if len(sequence_input) > 0:
-        with st.expander("View Sequence Preview", expanded=False):
-            st.text_area(
-                f"Full Sequence ({len(sequence_input)} bp):",
-                value=sequence_input,
-                height=120,
-                disabled=True
-            )
+    normalised, issues = validate_sequence(sequence_input)
 
-    run_btn = st.button("🚀 Analyze & Predict Expression", type="primary")
+    if normalised:
+        with st.expander(f"Sequence preview ({len(normalised)} nt)", expanded=False):
+            st.text_area("Normalised sequence", value=normalised, height=120, disabled=True)
 
-    # 3. Results & XAI Section (Only visible after clicking Analyze or having a sequence input)
-    if (run_btn or sequence_input) and len(sequence_input) > 0:
-        logger.info(f"Triggering prediction workflow for input sequence length {len(sequence_input)} bp...")
-        try:
-            res = predict_construct(sequence_input, model=model, explainer=explainer)
-            logger.info(
-                f"Prediction Complete -> Risk: {res['risk_score']}%, Tier: {res['predicted_tier']}, "
-                f"Yield: {res['predicted_yield']} AU"
-            )
+    run_btn = st.button("Analyse construct", type="primary")
 
-            st.markdown("---")
+    # Gate the run on an explicit click. The sequence box ships with a sample,
+    # so without this the app would predict on page load and the button would
+    # have no effect.
+    if run_btn:
+        st.session_state["analysis_requested"] = True
+        st.session_state["analysed_sequence"] = normalised
 
-            # 50/50 Split Layout for Results
-            left_col, right_col = st.columns([1, 1])
+    if not st.session_state.get("analysis_requested"):
+        st.info("Enter a sequence and select Analyse construct to score it.", icon="ℹ️")
+        return
 
-            # Left Column: Extracted Features
-            with left_col:
-                st.markdown("### 📊 Extracted Sequence & Protein Features")
-                
-                # Grid display of 5 features using st.metric
-                f1, f2, f3 = st.columns(3)
-                f1.metric("1. GC Content", f"{res['features']['gc_content']}%")
-                f2.metric("2. CAI", f"{res['features']['codon_adaptation_index']}")
-                f3.metric("3. MFE Folding", f"{res['features']['mrna_folding_stability']} kcal/mol")
-                
-                f4, f5, f_blank = st.columns(3)
-                gravy_score = res['features'].get('gravy_score')
-                pi_value = res['features'].get('pI')
-                f4.metric("4. GRAVY Score", f"{gravy_score}" if gravy_score is not None and not np.isnan(gravy_score) else "N/A")
-                f5.metric("5. Isoelectric Point", f"{pi_value}" if pi_value is not None and not np.isnan(pi_value) else "N/A")
+    # A sequence edited after the last run should not silently show stale results.
+    if st.session_state.get("analysed_sequence") != normalised:
+        st.info("The sequence has changed since the last analysis. Select Analyse construct to rescore.", icon="ℹ️")
+        return
 
-                # Biological Construct Diagnostics Logic Layer
-                with st.expander("🩺 Biological Construct Diagnostics", expanded=True):
-                    has_warning = False
+    st.divider()
 
-                    # 2. GRAVY Score Logic (Hydrophobicity)
-                    if gravy_score is not None and not np.isnan(gravy_score) and gravy_score > 0.4:
-                        has_warning = True
-                        st.warning("⚠️ Inclusion Body Risk: This construct has a high GRAVY score. The protein is highly hydrophobic and is likely to aggregate into insoluble inclusion bodies rather than remain in the soluble fraction.")
+    if issues:
+        render_validation_issues(issues)
 
-                    # 3. Isoelectric Point (pI) Logic
-                    if pi_value is not None and not np.isnan(pi_value) and (7.2 <= pi_value <= 7.8):
-                        has_warning = True
-                        st.warning("⚠️ Aggregation Warning: The pI of this protein falls within the internal pH of the E. coli cytoplasm (7.2 - 7.8). The protein will carry a neutral charge and is highly prone to aggregation. Consider adding a charged fusion tag to shift the pI.")
+    if not is_scorable(issues):
+        st.caption("Scoring is withheld until the problems above are resolved, so that no figure is shown "
+                   "that the input cannot support.")
+        return
 
-                    # 4. Success State
-                    if not has_warning:
-                        st.success("✅ Diagnostics Clear: No major solubility or aggregation red flags detected for E. coli expression based on GRAVY and pI thresholds.")
+    logger.info(f"Running prediction for {len(normalised)} nt sequence...")
+    try:
+        res = predict_construct(normalised, model=model, explainer=explainer)
+        logger.info(
+            f"Prediction complete -> Risk: {res['risk_score']}%, Tier: {res['predicted_tier']}, "
+            f"Tier midpoint: {res['predicted_yield']}"
+        )
+    except Exception as pipeline_err:
+        logger.error(f"Prediction failed: {pipeline_err}", exc_info=True)
+        st.error(f"The prediction could not be completed: {pipeline_err}")
+        return
 
-            # Right Column: Prediction Output & Risk
-            with right_col:
-                st.markdown("### 🎯 Prediction Output & Risk")
-                
-                # Dynamic colored box for failure risk
-                risk = res["risk_score"]
-                if risk < 30.0:
-                    st.success(f"🟢 **Low Risk of Construct Failure ({risk}%)**")
-                elif risk < 60.0:
-                    st.warning(f"🟡 **Moderate Construct Failure Risk ({risk}%)**")
-                else:
-                    st.error(f"🔴 **High Construct Failure Risk ({risk}%)**")
+    # Vertical hierarchy: verdict, features, diagnostics, attribution.
+    render_verdict(res, prov)
+    st.divider()
+    render_features(res)
+    st.divider()
+    render_diagnostics(res)
+    st.divider()
 
-                p1, p2 = st.columns(2)
-                p1.metric("Predicted Expression Tier", res["predicted_tier"])
-                p2.metric("Estimated Yield", f"{res['predicted_yield']} AU")
+    st.markdown("#### Model attribution")
+    feat_df = pd.DataFrame([{
+        "GC_percent": res["features"]["gc_content"],
+        "CAI": res["features"]["codon_adaptation_index"],
+        "folding_energy": res["features"]["mrna_folding_stability"],
+        "gravy_score": res["features"].get("gravy_score", np.nan),
+        "pI": res["features"].get("pI", np.nan),
+    }])
+    render_shap_waterfall(model, feat_df, predicted_class=res.get("predicted_score"))
 
-                # Smart Logic Layer: Over-Optimization Trap check
-                cai_val = res["features"]["codon_adaptation_index"]
-                mfe_val = res["features"]["mrna_folding_stability"]
-                pred_score = res.get("predicted_score")
-                if pred_score is None:
-                    pred_score = 0 if "Low" in str(res["predicted_tier"]) else (5 if "High" in str(res["predicted_tier"]) else 3)
+    with st.expander("Feature contribution for this construct", expanded=False):
+        st.caption(
+            "Per-construct contributions, not global importances. With a trained model these are the "
+            "SHAP values for this sequence; in heuristic mode they are weights derived from the feature "
+            "values themselves and carry no model information."
+        )
+        fi_df = pd.DataFrame(
+            list(res["feature_importances"].items()),
+            columns=["Feature", "Contribution"],
+        ).sort_values("Contribution", ascending=True)
+        st.bar_chart(fi_df.set_index("Feature"))
 
-                if cai_val > 0.85 and pred_score <= 2 and mfe_val < -15.0:
-                    logger.warning("Over-Optimization Trap detected for user construct!")
-                    st.error("⚠️ OVER-OPTIMIZATION TRAP DETECTED!")
-                    st.info(
-                        "Your Codon Adaptation Index is excellent, but the model predicts failure. "
-                        "Aggressive codon optimization resulted in high GC content, creating tight mRNA hairpins "
-                        "that block ribosome entry. We recommend relaxing the CAI to improve 5' folding energy."
-                    )
-
-                # Feature Importance Summary inside an expander
-                with st.expander("🔍 View Global Feature Importance", expanded=False):
-                    fi_df = pd.DataFrame(
-                        list(res["feature_importances"].items()),
-                        columns=["Feature", "Importance Score"]
-                    ).sort_values("Importance Score", ascending=True)
-                    st.bar_chart(fi_df.set_index("Feature"))
-
-            # 4. Explainable AI (XAI) Section inside large expander
-            st.markdown("---")
-            feat_df = pd.DataFrame([{
-                "GC_percent": res["features"]["gc_content"],
-                "CAI": res["features"]["codon_adaptation_index"],
-                "folding_energy": res["features"]["mrna_folding_stability"],
-                "gravy_score": res["features"].get("gravy_score", np.nan),
-                "pI": res["features"].get("pI", np.nan)
-            }])
-            render_shap_waterfall(model, feat_df)
-
-        except Exception as pipeline_err:
-            logger.error(f"Unhandled exception during prediction execution: {str(pipeline_err)}", exc_info=True)
-            st.error(f"An unexpected error occurred during prediction: {str(pipeline_err)}")
 
 if __name__ == "__main__":
     main()

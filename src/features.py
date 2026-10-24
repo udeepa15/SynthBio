@@ -74,17 +74,27 @@ def calculate_cai(sequence: str, codon_table: Dict[str, float] = ECOLI_CODON_W) 
     return cai
 
 
+# Length of the 5' region the folding proxy is defined over. Below this length
+# the proxy is computed over whatever is present, which is why validation
+# refuses shorter sequences.
+FOLDING_WINDOW_NT = 48
+
+
 def estimate_mrna_folding_stability(sequence: str) -> float:
     """
-    Estimate 5' mRNA secondary structure minimum free energy (MFE in kcal/mol).
-    Lower (more negative) values indicate tighter folding (potential translation blockage).
+    GC-derived proxy for 5' mRNA secondary structure, reported in kcal/mol.
+
+    This is not a thermodynamic minimum free energy: no folding model is
+    evaluated. The value scales with the GC fraction of the first
+    FOLDING_WINDOW_NT nucleotides, so a more negative figure means a GC-richer
+    5' region, taken to imply tighter folding and obstructed ribosome binding.
     """
     seq = sequence.upper().replace(" ", "").replace("\n", "")
     if not seq:
         logger.warning("Empty sequence provided for MFE folding stability calculation.")
         return 0.0
     
-    region_5prime = seq[:48]
+    region_5prime = seq[:FOLDING_WINDOW_NT]
     gc_fraction = (region_5prime.count("G") + region_5prime.count("C")) / max(len(region_5prime), 1)
     mfe = -1.5 * len(region_5prime) * (gc_fraction ** 1.5)
     return round(mfe, 2)
