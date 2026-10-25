@@ -37,19 +37,26 @@ def test_trained_mode_reports_model_class():
 
 
 def test_partial_feature_set_is_disclosed():
-    """A model fitted on fewer than the 5 advertised features must say so."""
-    prov = provenance.describe(FakeModel(["GC_percent", "CAI", "folding_energy"]))
+    """A model fitted on fewer than the computable features must say so."""
+    prov = provenance.describe(FakeModel(["GC_percent", "CAI"]))
     caveats = " ".join(prov.caveats())
-    assert "3 of the 5 features" in caveats
+    assert "2 of the" in caveats
     assert "gravy_score" in caveats
     assert "pI" in caveats
 
 
-def test_full_feature_set_produces_no_caveat():
-    prov = provenance.describe(
-        FakeModel(["GC_percent", "CAI", "folding_energy", "gravy_score", "pI"])
-    )
-    assert prov.caveats() == []
+def test_full_feature_set_leaves_only_the_scope_caveat():
+    """
+    With every computable feature fitted, no feature is reported as missing.
+
+    The scope caveat remains: the model separates genes, not synonymous variants
+    of one gene, and that holds however many features it uses.
+    """
+    prov = provenance.describe(FakeModel(list(provenance.SERVABLE_FEATURE_NAMES)))
+    caveats = prov.caveats()
+    assert len(caveats) == 1
+    assert "synonymous codon variants" in caveats[0]
+    assert "computed and shown" not in caveats[0]
 
 
 def test_line_always_carries_the_analysis_time():

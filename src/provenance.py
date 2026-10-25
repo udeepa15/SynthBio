@@ -27,6 +27,13 @@ TRAINED = "trained"
 
 TRAINING_DATASET = "Boël et al. 2016 (JMB), NESG E. coli expression set"
 
+# Features the application can compute from a pasted sequence. Kept here rather
+# than imported from predict so that provenance has no dependency on inference.
+SERVABLE_FEATURE_NAMES = [
+    "GC_percent", "GC3", "CAI", "rare_codon_fraction", "rare_codons_head30",
+    "head_folding_48", "genewide_folding_avg", "gravy_score", "pI", "length_codons",
+]
+
 
 @dataclass
 class Provenance:
@@ -57,7 +64,9 @@ class Provenance:
             if self.model_built:
                 parts.append(f"Built: {self.model_built:%Y-%m-%d}")
             if self.model_features:
-                parts.append(f"Inputs: {len(self.model_features)} of 5 features ({', '.join(self.model_features)})")
+                parts.append(
+                    f"Inputs: {len(self.model_features)} features ({', '.join(self.model_features)})"
+                )
             if self.dataset:
                 parts.append(f"Training data: {self.dataset}")
         else:
@@ -76,14 +85,19 @@ class Provenance:
                 "SHAP attribution is unavailable in this mode."
             )
             return notes
-        if self.model_features and len(self.model_features) < 5:
-            missing = [f for f in ["GC_percent", "CAI", "folding_energy", "gravy_score", "pI"]
-                       if f not in self.model_features]
+        missing = [f for f in SERVABLE_FEATURE_NAMES if f not in (self.model_features or [])]
+        if self.model_features and missing:
             notes.append(
-                f"The loaded artifact was fitted on {len(self.model_features)} of the 5 features "
-                f"({', '.join(self.model_features)}). {', '.join(missing)} are computed and shown, "
-                "and are used by the diagnostics below, but do not enter the model's prediction."
+                f"The loaded artifact was fitted on {len(self.model_features)} of the "
+                f"{len(SERVABLE_FEATURE_NAMES)} computable features. "
+                f"{', '.join(missing)} are computed and shown, and are used by the diagnostics "
+                "below, but do not enter the model's prediction."
             )
+        notes.append(
+            "The model distinguishes one gene from another. It should not be used to choose "
+            "between synonymous codon variants of the same gene: on Welch's measured variant "
+            "series it ranks those backwards."
+        )
         return notes
 
 

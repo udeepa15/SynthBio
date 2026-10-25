@@ -128,12 +128,18 @@ def validate_dataset(df: pd.DataFrame, feature_cols: list, target_col: str, id_c
 #                            Gave48 values. Superseded by the two above.
 FEATURE_CANDIDATES = [
     "GC_percent",
+    "GC3",
     "CAI",
+    "rare_codon_fraction",
+    "rare_codons_head30",
+    "head_folding_48",
     "head_folding_energy",
+    "genewide_folding_avg",
     "genewide_folding_avg48",
     "folding_energy",
     "gravy_score",
     "pI",
+    "length_codons",
 ]
 
 # Newest first. The v1 table's CAI was computed from weights derived over the
@@ -141,6 +147,10 @@ FEATURE_CANDIDATES = [
 # folding column was the weaker gene-wide average; v2 fixes both and strips the
 # vector His-tag before computing GC and CAI.
 DATASET_PREFERENCE = [
+    # v4 adds features computed from the v3 sequences: GC3, rare-codon measures,
+    # real ViennaRNA folding energies, protein GRAVY and pI, and length. On the
+    # full set these roughly double the ranking quality of the GC/CAI pair.
+    "data/processed/feature_table_v4.csv",
     "data/processed/feature_table_v2.csv",
     "data/processed/feature_table_boel_5features.csv",
     "data/processed/feature_table.csv",

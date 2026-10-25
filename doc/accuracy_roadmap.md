@@ -14,7 +14,52 @@ A practical list of what stands between the current prototype and a tool whose p
 | 6. Model refinements | Not started, deliberately. |
 | 7. Production engineering | **Partly done.** Dependencies are pinned, and the pipeline writes a metadata sidecar recording the data hash, feature ranges, library versions and scores. Prediction logging is still to do. |
 
-## Where it stands today
+## Retrained on v4 (2026-10-25)
+
+The v3 table supplied the sequences, so every feature below is now computed from
+them and the model is fitted on all 6,348 genes. Organisms held out of every fold.
+
+| Feature set | 6-tier F1 | Binary AUC | Rank rho | Top-10% |
+|---|---|---|---|---|
+| Chance / base rate | 0.079 | 0.500 | 0.000 | 49.5% |
+| GC + CAI (previous artifact) | 0.162 | 0.608 | 0.207 | 64.4% |
+| + GC3, rare codons | 0.167 | 0.608 | 0.205 | 64.4% |
+| + real folding | 0.170 | 0.625 | 0.242 | 67.0% |
+| **+ GRAVY, pI, length (deployed)** | **0.192** | **0.660** | **0.333** | **73.2%** |
+| Research: + Boël's Gz48v, Gave48 | 0.196 | 0.666 | 0.349 | 74.0% |
+
+Three findings, two of which overturn earlier conclusions in this document.
+
+**The vector-dependent feature is not needed.** Adding Boël's `Gz48v`, which
+folds the expression vector's 5' UTR with the gene head, moves ranking from 0.333
+to 0.349. Step 0 below proposed building vector support to obtain it; that is not
+worth doing. Everything achievable here is servable.
+
+**GC3 and the rare-codon measures add nothing on this dataset**, despite being the
+strongest features on Welch. The difference is what each dataset varies: Welch
+holds the protein fixed and changes codons, so composition is all there is; Boël
+varies the protein, where GRAVY, pI and length dominate. Dropping one feature at a
+time from the full set, the load-bearing ones are pI (-0.043), head folding
+(-0.037), GRAVY (-0.024) and length (-0.017). CAI contributes 0.000.
+
+**The deployed model now beats its baselines**, at macro F1 0.225 on the held-out
+test against 0.181 for guessing by class frequency. That is the first time.
+
+### The limit that remains
+
+Scored against Welch's measured yields, the retrained model still ranks
+**backwards within a protein series**: rho -0.31 on the polymerase variants and
+-0.31 on the scFv variants. Its overall rho of +0.54 across both series is an
+artifact of the two proteins differing in length, which the model now reads, and
+must not be quoted as skill.
+
+So the model separates *one gene from another*, which is what the application
+asks of it, and is actively misleading for choosing between *synonymous variants
+of the same gene*. The interface states this, and the out-of-range guard fires on
+codon-optimised sequences anyway: 31 of Welch's 62 variants carry a CAI above
+anything in the training data.
+
+## Where it stood before this
 
 Measured on the v2 table, organisms held out of every fold, 6,348 genes:
 

@@ -28,10 +28,25 @@ HEURISTIC_SOURCE = "heuristic_rules"
 
 # Feature columns this module can compute from a pasted sequence, and therefore
 # the only columns a model may be fitted on if the application is to serve it.
-# The Boel folding columns are deliberately absent: they are RNAstructure
-# energies over the vector 5' UTR, which no sequence-only calculation here
-# reproduces.
-SERVABLE_FEATURES = ["GC_percent", "CAI", "folding_energy", "gravy_score", "pI"]
+#
+# Boel's own Gz48v and Gave48 are deliberately absent: Gz48v folds the
+# expression vector's 5' UTR together with the gene head, so it depends on the
+# vector rather than the construct. Measured on the full Boel set, leaving it
+# out costs almost nothing (ranking 0.333 against 0.349, binary AUC 0.660
+# against 0.666), so the vector dependency is not worth taking on.
+SERVABLE_FEATURES = [
+    "GC_percent",
+    "GC3",
+    "CAI",
+    "rare_codon_fraction",
+    "rare_codons_head30",
+    "head_folding_48",
+    "genewide_folding_avg",
+    "gravy_score",
+    "pI",
+    "length_codons",
+    "folding_energy",
+]
 TIER_MAPPING = {
     0: "Very Low (Tier 0)",
     1: "Low (Tier 1)",
@@ -139,10 +154,16 @@ def predict_construct(
     # Prepare feature dataframe matching model expectations
     feat_df = pd.DataFrame([{
         "GC_percent": features["gc_content"],
+        "GC3": features.get("gc3_content", np.nan),
         "CAI": features["codon_adaptation_index"],
-        "folding_energy": features["mrna_folding_stability"],
+        "rare_codon_fraction": features.get("rare_codon_fraction", np.nan),
+        "rare_codons_head30": features.get("rare_codons_head30", np.nan),
+        "head_folding_48": features.get("head_folding_48", np.nan),
+        "genewide_folding_avg": features.get("genewide_folding_avg", np.nan),
         "gravy_score": features.get("gravy_score", np.nan),
-        "pI": features.get("pI", np.nan)
+        "pI": features.get("pI", np.nan),
+        "length_codons": features.get("length_codons", np.nan),
+        "folding_energy": features["mrna_folding_stability"],
     }])
     
     tier = None

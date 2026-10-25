@@ -361,12 +361,19 @@ def extract_features(sequence: str) -> Dict[str, float]:
     """
     logger.info(f"Extracting features for sequence length {len(sequence)} bp...")
     folding_avg = calculate_genewide_folding_avg(sequence)
+    head_folding = calculate_folding_energy(sequence[:FOLDING_WINDOW_NT])
+    clean = sequence.upper().replace(" ", "").replace("\n", "")
     features = {
         "gc_content": calculate_gc_content(sequence),
         "gc3_content": calculate_gc3(sequence),
         "codon_adaptation_index": calculate_cai(sequence),
         "rare_codon_fraction": calculate_rare_codon_fraction(sequence),
+        "rare_codons_head30": calculate_rare_codon_fraction(sequence, head_codons=30),
+        "length_codons": len(clean) // 3,
         "mrna_folding_stability": estimate_mrna_folding_stability(sequence),
+        # Folding of the construct's own 5' head. The servable counterpart of
+        # Boel's Gz48v, which additionally folds the expression vector's UTR.
+        "head_folding_48": float("nan") if head_folding is None else head_folding,
         "genewide_folding_avg": float("nan") if folding_avg is None else folding_avg,
     }
     protein_feats = calculate_protein_features(sequence)
