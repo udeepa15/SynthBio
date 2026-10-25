@@ -9,7 +9,7 @@ Feature engineering module for computing construct biophysical & protein feature
 
 import math
 import logging
-from typing import Dict, Union, List
+from typing import Dict, List, Tuple, Union
 import pandas as pd
 
 # Configure logger
@@ -209,15 +209,98 @@ def extract_features_df(df: pd.DataFrame, sequence_col: str = "sequence") -> pd.
     return pd.DataFrame(features_list)
 
 
+# Above this many annotated coding sequences the record is a genome or a
+# multi-gene contig, not one gene.
+MAX_ANNOTATED_CDS = 3
+
+
+def _parse_fasta_records(text: str) -> List[Tuple[str, str]]:
+    """Split FASTA text into (header, sequence) pairs."""
+    records, header, chunks = [], None, []
+    for line in text.splitlines():
+        if line.startswith(">"):
+            if header is not None:
+                records.append((header, "".join(chunks)))
+            header, chunks = line[1:].strip(), []
+        elif line.strip():
+            chunks.append(line.strip())
+    if header is not None:
+        records.append((header, "".join(chunks)))
+    return records
+
+
+def fetch_ncbi_cds(accession_id: str) -> Tuple[str, str]:
+    """
+    Fetch the coding sequence annotated on an NCBI record.
+
+    A RefSeq mRNA record carries the untranslated regions as well as the CDS, so
+    fetching the record whole yields a sequence that does not begin at the start
+    codon: NM_000207 returns 465 nt around a 333 nt CDS. NCBI can return the
+    annotated CDS directly, which is what this asks for.
+
+    Returns the longest CDS and a note describing what was found. Raises
+    LookupError when the record carries no CDS annotation, which is the case for
+    a genome or a non-coding record.
+    """
+    acc = accession_id.strip().upper()
+    if not acc:
+        raise ValueError("NCBI Accession ID cannot be empty.")
+
+    import urllib.request
+
+    url = (
+        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+        f"?db=nuccore&id={acc}&rettype=fasta_cds_na&retmode=text"
+    )
+    logger.info(f"Requesting annotated CDS for '{acc}' from NCBI...")
+    req = urllib.request.Request(url, headers={"User-Agent": "SynthBio/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        text = response.read().decode("utf-8", errors="replace")
+
+    records = [(h, s.upper()) for h, s in _parse_fasta_records(text) if s]
+
+    # A genome annotates thousands of genes. Picking the longest would return
+    # some arbitrary gene under the user's accession, which is worse than
+    # refusing: they would score a sequence they never asked for.
+    if len(records) > MAX_ANNOTATED_CDS:
+        logger.warning(f"'{acc}' annotates {len(records)} CDS records; refusing to choose one.")
+        raise LookupError(
+            f"Record '{acc}' annotates {len(records):,} coding sequences, so it is a genome or "
+            "multi-gene record rather than one gene."
+        )
+
+    if not records:
+        # Older GenBank entries for cDNA clones often carry no CDS annotation
+        # and are themselves close to a bare coding sequence, so the record is
+        # used as it stands and validation decides whether it is usable.
+        logger.warning(f"No CDS annotation on '{acc}'; falling back to the record as supplied.")
+        seq = fetch_ncbi_sequence(acc)
+        return seq, (
+            f"{acc} carries no CDS annotation, so the record is used as supplied ({len(seq)} nt). "
+            "If it includes untranslated regions, trim to the start codon yourself."
+        )
+
+    header, seq = max(records, key=lambda r: len(r[1]))
+    if len(records) == 1:
+        note = f"Using the coding sequence annotated on {acc} ({len(seq)} nt)."
+    else:
+        note = (
+            f"{acc} annotates {len(records)} coding sequences; using the longest "
+            f"({len(seq)} nt). Paste another one directly if you need it."
+        )
+    logger.info(f"Fetched CDS for '{acc}': {len(seq)} nt from {len(records)} annotated CDS record(s).")
+    return seq, note
+
+
 def fetch_ncbi_sequence(accession_id: str, email: str = "synthbio@example.com") -> str:
     """Fetch nucleotide FASTA sequence from NCBI Nucleotide database using accession number."""
     acc = accession_id.strip().upper()
     if not acc:
         logger.error("Empty NCBI Accession ID provided.")
         raise ValueError("NCBI Accession ID cannot be empty.")
-    
+
     logger.info(f"Attempting NCBI Entrez fetch for Accession '{acc}'...")
-    
+
     # Try BioPython Entrez first
     try:
         from Bio import Entrez, SeqIO

@@ -28,7 +28,7 @@ if not logger.handlers:
 
 from src.predict import predict_construct
 from src.model import load_model, get_shap_explainer, load_model_metadata
-from src.features import fetch_ncbi_sequence, FOLDING_WINDOW_NT
+from src.features import fetch_ncbi_cds, FOLDING_WINDOW_NT
 from src.xai import render_shap_waterfall
 from src.validation import validate_sequence, blocking_issues, advisory_issues, is_scorable
 from src import provenance as prov_mod
@@ -321,42 +321,57 @@ def main():
         "GC content, codon adaptation index, a 5' folding proxy, GRAVY and isoelectric point."
     )
 
-    # Input
+    # Input.
+    #
+    # A radio rather than tabs, because Streamlit renders every tab on every run
+    # regardless of which one is open. With tabs, both inputs were always live
+    # and the accession silently won, so a pasted sequence was scored as whatever
+    # accession happened to be left in the other tab, and clearing the accession
+    # silently reverted to the pre-filled sample. The source has to be one choice.
     st.markdown("#### Input sequence")
-    tab_raw, tab_ncbi = st.tabs(["Raw DNA sequence", "NCBI accession"])
+    source = st.radio(
+        "Sequence source",
+        ["Paste a sequence", "Fetch by NCBI accession"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
     sequence_input = ""
-    with tab_raw:
-        raw_seq = st.text_area(
+    if source == "Paste a sequence":
+        sequence_input = st.text_area(
             "Coding DNA sequence, 5' to 3'",
             value=SAMPLE_SEQUENCE,
             height=130,
             help="Must start at the start codon. A sample construct is pre-filled; replace it with your own.",
         )
-        sequence_input = raw_seq
-
-    with tab_ncbi:
+    else:
         # The examples are single-gene records on purpose. An earlier revision
         # offered NC_000913, the E. coli K-12 chromosome, which fetches 4.6 Mb
         # and can only ever be rejected.
         accession_id = st.text_input(
             "NCBI accession number",
             value="",
-            placeholder="A single gene or CDS record, e.g. M19447, J04639.1",
+            placeholder="e.g. NM_000207 (insulin), NM_000605, NM_000454",
             help=(
-                "The record must hold one gene's coding sequence. A genome, plasmid or "
-                "contig accession cannot be scored: open its annotation on NCBI and use "
-                "the CDS entry for the gene you want."
+                "The annotated coding sequence is used, so an mRNA record whose "
+                "untranslated regions would otherwise break the reading frame works. "
+                "A genome or non-coding record has no CDS to take."
             ),
         ).strip()
         if accession_id:
             logger.info(f"NCBI accession fetch requested for '{accession_id}'")
             try:
                 with st.spinner(f"Fetching '{accession_id}' from NCBI..."):
-                    fetched_seq = fetch_ncbi_sequence(accession_id)
-                if fetched_seq:
-                    st.success(f"Fetched {len(fetched_seq)} bp from NCBI.")
-                    sequence_input = fetched_seq
+                    sequence_input, note = fetch_ncbi_cds(accession_id)
+                st.success(note)
+            except LookupError as err:
+                logger.warning(f"No CDS on '{accession_id}': {err}")
+                st.error(
+                    f"{err} Scoring needs one gene's coding sequence, so a genome, plasmid or "
+                    "non-coding record cannot be used. Open the record's annotation on NCBI and "
+                    "take the CDS entry for the gene you want.",
+                    icon="⛔",
+                )
             except Exception as err:
                 logger.error(f"NCBI lookup failed for '{accession_id}': {err}", exc_info=True)
                 st.error(f"Could not fetch '{accession_id}' from NCBI: {err}")

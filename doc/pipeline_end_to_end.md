@@ -130,7 +130,9 @@ If the file is missing or fails to load, both come back as `None` and the app ru
 ### A1: User input
 Two tabs:
 - **Raw DNA sequence**: paste a coding sequence, 5' to 3'.
-- **NCBI accession**: enter an ID, and `fetch_ncbi_sequence()` (`src/features.py`) downloads the sequence from NCBI.
+- **NCBI accession**: enter an ID, and `fetch_ncbi_cds()` (`src/features.py`) downloads the *annotated coding sequence* from NCBI, not the whole record. A RefSeq mRNA record includes the untranslated regions, which would break the reading frame. A record annotating more than three CDSs is refused as a genome or multi-gene record; one annotating none is used as supplied, and validation decides.
+
+The two sources are a single choice rather than two tabs. Streamlit renders every tab on each run, so with tabs both inputs were always live and the accession silently overrode a pasted sequence.
 
 ### A2: `validate_sequence()`
 In `src/validation.py`. It cleans the input (uppercase, strips spaces and line breaks) and checks it for problems. Each problem is either **blocking** (scoring is refused) or **advisory** (a warning is shown, but scoring continues):

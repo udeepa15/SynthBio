@@ -19,12 +19,13 @@ verified here against a specific paper's table for each gene. For sequences with
 real measured yields, use the Welch 2009 set in
 `validation_set_known_expression.md`.
 
-**None of these accessions can be pasted into the application's NCBI tab.** Every
-RefSeq mRNA record includes the untranslated regions, so the fetched sequence
-does not start at the ATG. `NM_000207` returns 465 nt against a 333 nt CDS and
-fails with a missing start codon and internal stops; `NM_000605` returns 1144 nt
-against 567 nt and fails on reading frame as well. Use the FASTA file above and
-the Raw DNA tab.
+**These accessions now work directly in the application.** They did not when this
+set was first assembled: every RefSeq mRNA record carries the untranslated
+regions, so fetching the record whole returned a sequence that did not begin at
+the ATG. `NM_000207` returned 465 nt around its 333 nt CDS and failed on start
+codon and internal stops. The application now asks NCBI for the annotated coding
+sequence instead, so the accession alone is enough. The FASTA above remains the
+way to rescore the set in bulk.
 
 ## The table
 
