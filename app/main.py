@@ -27,7 +27,7 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 from src.predict import predict_construct
-from src.model import load_model, get_shap_explainer
+from src.model import load_model, get_shap_explainer, load_model_metadata
 from src.features import fetch_ncbi_sequence, FOLDING_WINDOW_NT
 from src.xai import render_shap_waterfall
 from src.validation import validate_sequence, blocking_issues, advisory_issues, is_scorable
@@ -50,19 +50,27 @@ VERDICT_STATES = {
 
 @st.cache_resource
 def load_trained_artifacts():
+    """
+    Load the model, its SHAP explainer and the training feature ranges.
+
+    The ranges come from the metadata sidecar the pipeline writes beside the
+    artifact; they are what lets the interface say when a construct sits outside
+    anything the model was fitted on.
+    """
     logger.info(f"Checking for trained model artifact at '{MODEL_PATH}'...")
     if os.path.exists(MODEL_PATH):
         try:
             model = load_model(MODEL_PATH)
             logger.info("Model loaded. Initializing SHAP TreeExplainer...")
             explainer = get_shap_explainer(model)
-            return model, explainer
+            metadata = load_model_metadata(MODEL_PATH) or {}
+            return model, explainer, metadata.get("feature_ranges")
         except Exception as err:
             logger.error(f"Failed to load model artifact: {err}", exc_info=True)
             logger.warning("Falling back to biophysical heuristic prediction mode.")
-            return None, None
+            return None, None, None
     logger.warning(f"No model artifact at '{MODEL_PATH}'. Running in heuristic mode.")
-    return None, None
+    return None, None, None
 
 
 def render_figure(container, value: str, label: str, note: str = "") -> None:
@@ -112,7 +120,8 @@ def render_verdict(res: dict, prov) -> None:
         icon=meta["icon"],
     )
 
-    tier_cols = st.columns(3)
+    confidence = res.get("confidence")
+    tier_cols = st.columns(4 if confidence is not None else 3)
     render_figure(tier_cols[0], str(res["predicted_tier"]), "Predicted expression tier")
     render_figure(
         tier_cols[1], f"{res['predicted_yield']}", "Tier midpoint (arbitrary units)",
@@ -122,10 +131,67 @@ def render_verdict(res: dict, prov) -> None:
         tier_cols[2], f"{risk}%", "Construct failure risk",
         "A fixed penalty rule over GC, CAI and the folding proxy. It does not read the model's tier.",
     )
+    if confidence is not None:
+        render_figure(
+            tier_cols[3], f"{confidence * 100:.0f}%", "Confidence in the tier",
+            "The model's own probability for the tier above. With six tiers, chance alone is 17%.",
+        )
+
+    render_unservable_notice(res)
+    render_out_of_range_notice(res)
 
     st.caption(prov.as_line())
     for note in prov.caveats():
         st.caption(f"Note: {note}")
+
+
+def render_unservable_notice(res: dict) -> None:
+    """
+    Say when the loaded artifact could not be used at all.
+
+    A model fitted on the Boel folding columns needs RNAstructure energies over
+    the vector 5' UTR, which cannot be derived from the pasted sequence alone. The
+    tier then comes from the fixed rules, and the provenance line would otherwise
+    still name a trained model.
+    """
+    missing = res.get("unservable_features") or []
+    if not missing:
+        return
+
+    st.error(
+        "**The trained model was not used.** It was fitted on "
+        f"{', '.join(f'`{name}`' for name in missing)}, which cannot be computed from a sequence "
+        "alone. The tier above comes from the fixed biophysical rules instead, so it carries no "
+        "information from the training data. Retrain on features this application can compute, or "
+        "supply the missing ones, before relying on the tier.",
+        icon="⛔",
+    )
+
+
+def render_out_of_range_notice(res: dict) -> None:
+    """
+    Say when a construct sits outside the data the model was fitted on.
+
+    A tree model answers such a construct by reusing the nearest leaf it learned,
+    which looks like a prediction but carries no evidence, so the figure above is
+    marked as out of scope rather than presented as a result.
+    """
+    outside = res.get("out_of_range_features") or []
+    if not outside:
+        return
+
+    parts = [
+        f"**{o['feature']}** is {o['value']:.3g}, {o['side']} the training range "
+        f"{o['min']:.3g} to {o['max']:.3g}"
+        for o in outside
+    ]
+    st.warning(
+        "**Outside the model's training range.** " + "; ".join(parts) + ". "
+        "The model has seen nothing like this construct, so treat the tier above as out of scope "
+        "rather than as a prediction. The failure risk and the diagnostics below are fixed rules "
+        "and are unaffected.",
+        icon="⚠️",
+    )
 
 
 def render_features(res: dict) -> None:
@@ -233,7 +299,7 @@ def main():
         initial_sidebar_state="expanded",
     )
 
-    model, explainer = load_trained_artifacts()
+    model, explainer, training_ranges = load_trained_artifacts()
     prov = prov_mod.describe(model, MODEL_PATH if model is not None else None)
 
     # Sidebar
@@ -323,7 +389,9 @@ def main():
 
     logger.info(f"Running prediction for {len(normalised)} nt sequence...")
     try:
-        res = predict_construct(normalised, model=model, explainer=explainer)
+        res = predict_construct(
+            normalised, model=model, explainer=explainer, feature_ranges=training_ranges
+        )
         logger.info(
             f"Prediction complete -> Risk: {res['risk_score']}%, Tier: {res['predicted_tier']}, "
             f"Tier midpoint: {res['predicted_yield']}"

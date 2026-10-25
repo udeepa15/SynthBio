@@ -52,24 +52,76 @@ def calculate_gc_content(sequence: str) -> float:
     return gc
 
 
-def calculate_cai(sequence: str, codon_table: Dict[str, float] = ECOLI_CODON_W) -> float:
-    """Calculate Codon Adaptation Index (CAI) for an open reading frame sequence."""
+def _relative_adaptiveness(table: Dict[str, float]) -> Dict[str, float]:
+    """
+    Normalise a codon usage table into Sharp & Li relative adaptiveness weights.
+
+    Each codon's weight is its usage divided by that of the most-used synonymous
+    codon for the same amino acid, so every family's best codon is 1.0. The
+    table above is almost in that form already, but the serine family peaks at
+    0.86, which depressed CAI for every serine-containing construct.
+
+    Stop codons and the two single-codon families (Met, Trp) are dropped: they
+    have no synonymous alternative, so they carry no information about codon
+    choice and Sharp & Li exclude them.
+    """
+    try:
+        from Bio.Data.CodonTable import standard_dna_table
+        amino_acid_of = standard_dna_table.forward_table
+    except ImportError:  # pragma: no cover - Biopython is a hard dependency
+        logger.warning("Biopython unavailable; CAI weights used without family normalisation.")
+        return {c: w for c, w in table.items() if w > 0}
+
+    families: Dict[str, Dict[str, float]] = {}
+    for codon, usage in table.items():
+        amino_acid = amino_acid_of.get(codon)
+        if amino_acid is None:  # stop codon
+            continue
+        families.setdefault(amino_acid, {})[codon] = usage
+
+    weights: Dict[str, float] = {}
+    for amino_acid, codons in families.items():
+        if len(codons) < 2:  # Met (ATG), Trp (TGG): no synonymous choice
+            continue
+        peak = max(codons.values())
+        if peak <= 0:
+            continue
+        for codon, usage in codons.items():
+            if usage > 0:
+                weights[codon] = usage / peak
+    return weights
+
+
+# Relative adaptiveness weights actually used for CAI, derived from the usage
+# table above. Synonymous families only, each normalised to a peak of 1.0.
+ECOLI_CODON_WEIGHTS: Dict[str, float] = _relative_adaptiveness(ECOLI_CODON_W)
+
+
+def calculate_cai(sequence: str, codon_table: Dict[str, float] = None) -> float:
+    """
+    Calculate Codon Adaptation Index (CAI) for an open reading frame sequence.
+
+    The geometric mean of each codon's relative adaptiveness weight, per Sharp &
+    Li (1987). Codons with no synonymous alternative and stop codons do not
+    enter the mean.
+    """
+    codon_table = ECOLI_CODON_WEIGHTS if codon_table is None else codon_table
     seq = sequence.upper().replace(" ", "").replace("\n", "")
     if len(seq) < 3:
         logger.warning(f"Sequence length ({len(seq)} bp) too short for CAI codon analysis.")
         return 0.0
-    
+
     codons = [seq[i:i+3] for i in range(0, len(seq) - len(seq) % 3, 3)]
     valid_w_values = []
-    
+
     for codon in codons:
         if codon in codon_table and codon_table[codon] > 0:
             valid_w_values.append(math.log(codon_table[codon]))
-            
+
     if not valid_w_values:
         logger.warning("No valid codons found matching E. coli CAI adaptiveness table.")
         return 0.0
-        
+
     cai = round(math.exp(sum(valid_w_values) / len(valid_w_values)), 3)
     return cai
 

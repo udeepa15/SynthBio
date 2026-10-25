@@ -1,0 +1,46 @@
+flowchart TD
+    subgraph TRAIN["Training (offline, run once)"]
+        T1["feature_table.csv<br/>gene_id, GC_percent, CAI, folding_energy, expression_score 0-5"] --> T2["load_and_prep_feature_table()<br/>validate_dataset()"]
+        T2 --> T3["80/20 stratified split"]
+        T3 --> T4["Tune XGBoost + LightGBM<br/>5-fold CV, organisms held out"]
+        T4 --> T5["Best: XGBClassifier<br/>800 trees x 6 classes, depth 4"]
+        T5 --> T6["Score on held-out 20%"]
+        T5 --> T7["Refit on all rows, save_model()<br/>models/baseline_model.joblib"]
+    end
+
+    subgraph APP["App: app/main.py main()"]
+        A0["load_trained_artifacts()<br/>load_model() + get_shap_explainer()"]
+        A1["User input: raw DNA<br/>or fetch_ncbi_sequence(accession)"] --> A2["validate_sequence()"]
+        A2 --> A3{"is_scorable()?"}
+        A3 -- no --> A4["render_validation_issues()<br/>scoring withheld"]
+        A3 -- yes --> P0["predict_construct(sequence, model, explainer)"]
+    end
+
+    T7 -.-> A0
+    A0 -.-> P0
+
+    subgraph PRED["src/predict.py predict_construct()"]
+        P0 --> F0["extract_features()  src/features.py"]
+        F0 --> F1["calculate_gc_content()"]
+        F0 --> F2["calculate_cai()"]
+        F0 --> F3["estimate_mrna_folding_stability()"]
+        F0 --> F4["calculate_protein_features()<br/>GRAVY, pI"]
+
+        F1 & F2 & F3 --> R1["calculate_failure_risk()<br/>fixed penalty formula"]
+        R1 --> OUT1["Failure risk %"]
+
+        F1 & F2 & F3 --> M0["model.predict()<br/>3 features only"]
+        M0 --> M1["Each class: sum of its 800 tree scores"]
+        M1 --> M2["softmax to 6 probabilities"]
+        M2 --> M3["argmax = tier 0-5<br/>TIER_MAPPING"]
+        M3 --> OUT2["Expression tier"]
+        M3 --> OUT3["Nominal yield = 10 + 17 x tier"]
+
+        F1 & F2 & F3 --> S1["explain_prediction_shap()"]
+        S1 --> OUT4["Feature importances"]
+    end
+
+    OUT1 & OUT2 & OUT3 --> V1["render_verdict()"]
+    F0 --> V2["render_features()"]
+    F4 --> V3["render_diagnostics()<br/>GRAVY > 0.4: inclusion bodies<br/>pI 7.2-7.8: aggregation"]
+    OUT4 --> V4["render_shap_waterfall()  src/xai.py"]

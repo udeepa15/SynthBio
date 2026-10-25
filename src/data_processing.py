@@ -1,4 +1,4 @@
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 import os
 import sys
 import pandas as pd
@@ -67,6 +67,24 @@ def prepare_dataset(
         
     return processed_df
 
+def organism_groups(gene_ids: pd.Series) -> pd.Series:
+    """
+    Group identifier for each gene, taken from the letter prefix of its gene_id.
+
+    NESG target ids carry a source-organism prefix (`AaR17`, `BtR40`), and GC
+    content is strongly organism-specific. Grouping folds by this prefix keeps
+    relatives of a gene out of the fold that scores it, so a model cannot score
+    well merely by recognising the organism. Ids with no letter prefix fall into
+    a single `_other` group.
+    """
+    return gene_ids.astype(str).str.extract(r"^([A-Za-z]+)")[0].fillna("_other").astype(str)
+
+
+def feature_ranges(X: pd.DataFrame) -> dict:
+    """Per-feature min/max of the training data, for out-of-distribution checks."""
+    return {col: {"min": float(X[col].min()), "max": float(X[col].max())} for col in X.columns}
+
+
 def validate_dataset(df: pd.DataFrame, feature_cols: list, target_col: str, id_col: str = "gene_id") -> bool:
     """Validate dataset for shape, missing values, and numeric dtypes of feature columns."""
     print("=" * 60)
@@ -97,9 +115,51 @@ def validate_dataset(df: pd.DataFrame, feature_cols: list, target_col: str, id_c
     print("=" * 60)
     return total_missing == 0 and all_numeric
 
+# Every feature column any revision of the table may carry. The list is a
+# superset on purpose: whichever of these a given CSV holds becomes the feature
+# set, so a table revision does not require a code change.
+#
+#   head_folding_energy      Boel's Gz48v: folding energy of the vector 5' UTR
+#                            plus the first 48 nt of the gene. The strongest
+#                            single feature available (Spearman 0.177).
+#   genewide_folding_avg48   Boel's Gave48: folding energy averaged over sliding
+#                            48 nt windows across the rest of the gene (0.077).
+#   folding_energy           The v1 table's single folding column, which held
+#                            Gave48 values. Superseded by the two above.
+FEATURE_CANDIDATES = [
+    "GC_percent",
+    "CAI",
+    "head_folding_energy",
+    "genewide_folding_avg48",
+    "folding_energy",
+    "gravy_score",
+    "pI",
+]
+
+# Newest first. The v1 table's CAI was computed from weights derived over the
+# highest-expressing genes, which leaked the target label into a feature, and its
+# folding column was the weaker gene-wide average; v2 fixes both and strips the
+# vector His-tag before computing GC and CAI.
+DATASET_PREFERENCE = [
+    "data/processed/feature_table_v2.csv",
+    "data/processed/feature_table_boel_5features.csv",
+    "data/processed/feature_table.csv",
+]
+
+
+def resolve_dataset_path(csv_path: Optional[str] = None) -> Optional[str]:
+    """The dataset to train on: the requested one, else the newest available."""
+    if csv_path and os.path.exists(csv_path):
+        return csv_path
+    for candidate in DATASET_PREFERENCE:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def load_and_prep_feature_table(
-    csv_path: str = "data/processed/feature_table_boel_5features.csv",
-    feature_cols: list = ["GC_percent", "CAI", "folding_energy", "gravy_score", "pI"],
+    csv_path: str = None,
+    feature_cols: list = None,
     target_col: str = "expression_score",
     id_col: str = "gene_id"
 ) -> Tuple[pd.Series, pd.DataFrame, pd.Series, pd.DataFrame]:
@@ -107,12 +167,11 @@ def load_and_prep_feature_table(
     Loads CSV, validates columns, separates into identifiers, features (X), and target (y),
     and prints summary statistics.
     """
-    if not os.path.exists(csv_path) and os.path.exists("data/processed/feature_table.csv"):
-        csv_path = "data/processed/feature_table.csv"
-        feature_cols = ["GC_percent", "CAI", "folding_energy"]
+    csv_path = resolve_dataset_path(csv_path) or csv_path
+    feature_cols = FEATURE_CANDIDATES if feature_cols is None else feature_cols
 
     df = pd.read_csv(csv_path)
-    
+
     # Filter feature_cols to those present in df
     actual_feature_cols = [c for c in feature_cols if c in df.columns]
     
@@ -135,16 +194,25 @@ def load_and_prep_feature_table(
 
 def split_data(
     df: pd.DataFrame,
-    feature_cols: list = ["GC_percent", "CAI", "folding_energy", "gravy_score", "pI"],
+    feature_cols: list = None,
     target_col: str = "expression_score",
     test_size: float = 0.2,
     random_state: int = 42
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-    """Split data into train and test sets for model training."""
+    """
+    Split data into train and test sets for model training.
+
+    The split is stratified on the target whenever the target is discrete, so
+    that tier 1, which holds 131 of 6348 rows, is represented on both sides. An
+    earlier revision stratified only for object dtype, which silently skipped an
+    integer target and left the rare tiers to chance.
+    """
+    feature_cols = FEATURE_CANDIDATES if feature_cols is None else feature_cols
     actual_feature_cols = [c for c in feature_cols if c in df.columns]
     X = df[actual_feature_cols]
     y = df[target_col]
-    return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y if y.dtype == 'object' else None)
+    stratify = y if y.nunique() < max(2, len(y) // 20) else None
+    return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=stratify)
 
 
 if __name__ == "__main__":

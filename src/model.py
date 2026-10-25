@@ -2,16 +2,17 @@
 Model training and evaluation module for gradient boosting baseline models (XGBoost / LightGBM).
 """
 
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
+import json
 import os
 import logging
 import warnings
 import joblib
 import pandas as pd
 import numpy as np
-from sklearn.metrics import classification_report, f1_score
+from sklearn.metrics import classification_report, f1_score, balanced_accuracy_score, accuracy_score
 from sklearn.dummy import DummyClassifier, DummyRegressor
-from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold, cross_validate, cross_val_score
 from sklearn.ensemble import RandomForestClassifier
 
 # Configure logger
@@ -39,6 +40,35 @@ except ImportError:
     logger.warning("SHAP library not found. Explainable AI (XAI) waterfall rendering will be disabled.")
 
 FEATURE_NAMES = ["GC_percent", "CAI", "folding_energy"]
+
+# Settings selected by a randomised search of 40 candidates per algorithm,
+# scored by macro F1 under organism-grouped 5-fold cross-validation. XGBoost
+# (organism-held-out macro F1 0.199) beat LightGBM (0.193). Retuning these is
+# only worth doing once the feature set changes; see doc/accuracy_roadmap.md.
+TUNED_XGB_PARAMS = {
+    "objective": "multi:softprob",
+    "n_estimators": 800,
+    "max_depth": 4,
+    "learning_rate": 0.03,
+    "subsample": 0.8,
+    "colsample_bytree": 1.0,
+    "min_child_weight": 1,
+    "reg_lambda": 10,
+    "random_state": 42,
+    "tree_method": "hist",
+}
+
+
+def balanced_sample_weight(y: pd.Series) -> np.ndarray:
+    """
+    Per-sample weights that equalise the influence of each tier.
+
+    Tier counts in the Boel set are heavily uneven (tier 1 has 131 rows against
+    tier 0's 1754), so without weighting the model learns to ignore rare tiers.
+    """
+    counts = y.value_counts()
+    weights = len(y) / (len(counts) * counts)
+    return weights.reindex(y).to_numpy()
 
 
 def train_dummy_classifier(
@@ -80,6 +110,85 @@ def train_baseline_classifier(
     model.fit(X_train, y_train)
     logger.info(f"{model_name} model fit successfully.")
     return model
+
+
+def train_tuned_classifier(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    params: Dict[str, Any] = None
+) -> Any:
+    """
+    Fit the tuned gradient boosted classifier that the application loads.
+
+    Falls back to `train_baseline_classifier` when XGBoost is unavailable, since
+    the tuned settings are XGBoost-specific.
+    """
+    if XGBClassifier == RandomForestClassifier:
+        logger.warning("XGBoost unavailable; tuned settings do not apply. Using the baseline classifier.")
+        return train_baseline_classifier(X_train, y_train)
+
+    params = dict(TUNED_XGB_PARAMS if params is None else params)
+    logger.info(f"Fitting tuned XGBClassifier on {X_train.shape[0]} samples with features {list(X_train.columns)}...")
+    model = XGBClassifier(**params)
+    model.fit(X_train, y_train, sample_weight=balanced_sample_weight(y_train))
+    logger.info("Tuned model fit successfully.")
+    return model
+
+
+def baseline_scores(y_train: pd.Series, y_test: pd.Series) -> Dict[str, float]:
+    """
+    Scores of the trivial predictors any real model has to beat.
+
+    Accuracy alone is misleading on this target: always answering the most
+    frequent tier scores higher than a model that genuinely separates tiers but
+    spreads its errors, which is why macro F1 is reported alongside it.
+    """
+    majority = [y_train.mode()[0]] * len(y_test)
+    rng = np.random.default_rng(42)
+    shares = (y_train.value_counts(normalize=True)).sort_index()
+    random_guess = rng.choice(shares.index.to_numpy(), size=len(y_test), p=shares.to_numpy())
+    return {
+        "majority_accuracy": float(accuracy_score(y_test, majority)),
+        "majority_f1_macro": float(f1_score(y_test, majority, average="macro", zero_division=0)),
+        "random_accuracy": float(accuracy_score(y_test, random_guess)),
+        "random_f1_macro": float(f1_score(y_test, random_guess, average="macro", zero_division=0)),
+    }
+
+
+def grouped_cross_validate(
+    model: Any,
+    X: pd.DataFrame,
+    y: pd.Series,
+    groups: pd.Series,
+    n_splits: int = 5,
+    random_state: int = 42
+) -> Dict[str, float]:
+    """
+    Cross-validate with whole organisms held out of each fold.
+
+    A plain random split lets genes from one organism sit on both sides of the
+    fold, which inflates the score without improving real predictions. This is
+    the figure to quote.
+    """
+    usable = min(n_splits, groups.nunique(), int(y.value_counts().min()))
+    if usable < 2:
+        logger.warning("Too few groups or rare-class rows for grouped CV; falling back to stratified CV.")
+        return cross_validate_model(model, X, y, n_splits=max(2, min(n_splits, int(y.value_counts().min()))))
+
+    logger.info(f"Running {usable}-fold organism-grouped cross-validation over {groups.nunique()} groups...")
+    cv = StratifiedGroupKFold(n_splits=usable, shuffle=True, random_state=random_state)
+    scores = cross_val_score(model, X, y, cv=cv, groups=groups, scoring="f1_macro")
+    metrics = {
+        "grouped_mean_f1_macro": float(np.mean(scores)),
+        "grouped_std_f1_macro": float(np.std(scores)),
+        "n_groups": int(groups.nunique()),
+        "n_splits": int(usable),
+    }
+    logger.info(
+        f"Organism-held-out macro F1: {metrics['grouped_mean_f1_macro']:.3f} "
+        f"(+/-{metrics['grouped_std_f1_macro']:.3f}) over {usable} folds"
+    )
+    return metrics
 
 
 def cross_validate_model(
@@ -159,8 +268,48 @@ def evaluate_model(model: Any, X_test: pd.DataFrame, y_test: pd.Series) -> Dict[
     preds = model.predict(X_test)
     report = classification_report(y_test, preds, output_dict=True, zero_division=0)
     acc = report.get("accuracy", 0.0)
-    logger.info(f"Test Set Evaluation Complete -> Accuracy: {acc*100:.2f}%")
+    report["f1_macro"] = float(f1_score(y_test, preds, average="macro", zero_division=0))
+    report["balanced_accuracy"] = float(balanced_accuracy_score(y_test, preds))
+    logger.info(
+        f"Test Set Evaluation Complete -> Accuracy: {acc*100:.2f}%, "
+        f"Macro F1: {report['f1_macro']:.3f}, Balanced Accuracy: {report['balanced_accuracy']*100:.2f}%"
+    )
     return report
+
+
+def metadata_path(model_filepath: str) -> str:
+    """Path of the sidecar file recording how a model artifact was produced."""
+    return os.path.splitext(model_filepath)[0] + "_metadata.json"
+
+
+def save_model_metadata(model_filepath: str, metadata: Dict[str, Any]) -> str:
+    """
+    Write the artifact's provenance next to it.
+
+    Records the training data and its hash, the feature list and its observed
+    ranges, library versions and the measured scores, so a deployed model can be
+    traced back to the run that produced it.
+    """
+    path = metadata_path(model_filepath)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, default=str)
+    logger.info(f"Model metadata written to '{path}'.")
+    return path
+
+
+def load_model_metadata(model_filepath: str) -> Optional[Dict[str, Any]]:
+    """Read an artifact's sidecar metadata, or None when it has none."""
+    path = metadata_path(model_filepath)
+    if not os.path.exists(path):
+        logger.warning(f"No metadata sidecar found at '{path}'.")
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError) as err:
+        logger.error(f"Could not read model metadata from '{path}': {err}")
+        return None
 
 
 def save_model(model: Any, filepath: str) -> None:
