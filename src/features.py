@@ -9,6 +9,8 @@ Feature engineering module for computing construct biophysical & protein feature
 
 import math
 import logging
+import os
+from functools import lru_cache
 from typing import Dict, List, Optional, Tuple, Union
 import pandas as pd
 
@@ -201,6 +203,70 @@ FOLDING_AVG_WINDOW_NT = 48
 FOLDING_AVG_STEP_NT = 24
 
 
+@lru_cache(maxsize=1)
+def _rna_module():
+    """
+    Import ViennaRNA, working around its missing runtime dependency on Windows.
+
+    The `_RNA` extension links an OpenMP runtime that the wheel does not ship,
+    so a bare `import RNA` fails with "DLL load failed" in a process that has
+    loaded nothing else. SciPy and XGBoost both pull that runtime in, which is
+    why folding worked inside the application, where the model loads first, and
+    silently returned nothing in a standalone script. Importing SciPy first makes
+    the import deterministic rather than dependent on what ran before.
+
+    Returns the module, or None when ViennaRNA is genuinely unavailable.
+    """
+    try:
+        import RNA
+        return RNA
+    except ImportError:
+        pass
+
+    # Put the OpenMP runtime on the DLL search path. scikit-learn ships
+    # vcomp140.dll in its .libs directory; on Windows that is enough for the
+    # ViennaRNA extension to resolve.
+    if hasattr(os, "add_dll_directory"):
+        for root in site_packages_dirs():
+            for candidate in (os.path.join(root, "sklearn", ".libs"),):
+                if os.path.isdir(candidate):
+                    try:
+                        os.add_dll_directory(candidate)
+                        logger.info(f"Added '{candidate}' to the DLL search path for ViennaRNA.")
+                    except OSError:
+                        pass
+    try:
+        import RNA
+        return RNA
+    except ImportError:
+        pass
+
+    # Last resort: importing scikit-learn loads the same runtime as a side
+    # effect, which works even where add_dll_directory does not apply.
+    try:
+        import sklearn  # noqa: F401
+        import RNA
+        logger.info("ViennaRNA loaded after preloading the scikit-learn runtime.")
+        return RNA
+    except ImportError as err:
+        logger.warning(f"ViennaRNA unavailable ({err}); real folding energy will not be computed.")
+        return None
+
+
+def site_packages_dirs() -> List[str]:
+    """Directories that may hold installed packages, for DLL path lookup."""
+    import sysconfig
+
+    paths = {sysconfig.get_paths().get("purelib"), sysconfig.get_paths().get("platlib")}
+    try:
+        import sklearn
+
+        paths.add(os.path.dirname(os.path.dirname(sklearn.__file__)))
+    except ImportError:
+        pass
+    return [p for p in paths if p and os.path.isdir(p)]
+
+
 def calculate_folding_energy(sequence: str) -> Optional[float]:
     """
     Minimum free energy of the sequence, in kcal/mol, via ViennaRNA.
@@ -212,13 +278,11 @@ def calculate_folding_energy(sequence: str) -> Optional[float]:
     seq = sequence.upper().replace(" ", "").replace("\n", "").replace("T", "U")
     if not seq:
         return None
-    try:
-        import RNA
-    except ImportError:
-        logger.warning("ViennaRNA not installed; real folding energy unavailable.")
+    rna = _rna_module()
+    if rna is None:
         return None
     try:
-        _, mfe = RNA.fold(seq)
+        _, mfe = rna.fold(seq)
         return round(float(mfe), 2)
     except Exception as err:
         logger.error(f"ViennaRNA folding failed: {err}")
