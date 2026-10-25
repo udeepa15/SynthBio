@@ -10,6 +10,10 @@ scikit-learn==1.9.1
 pandas==3.1.0
 numpy==2.5.4
 biopython==1.88
+# Real mRNA folding energies. The application degrades to the GC-derived proxy
+# without it, so it is optional at runtime but required to reproduce a model
+# fitted on genewide_folding_avg.
+ViennaRNA==2.7.2
 shap==0.54.1
 matplotlib==3.11.2
 seaborn==0.13.2

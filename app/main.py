@@ -28,7 +28,7 @@ if not logger.handlers:
 
 from src.predict import predict_construct
 from src.model import load_model, get_shap_explainer, load_model_metadata
-from src.features import fetch_ncbi_cds, FOLDING_WINDOW_NT
+from src.features import fetch_ncbi_cds, FOLDING_WINDOW_NT, FOLDING_AVG_WINDOW_NT
 from src.xai import render_shap_waterfall
 from src.validation import validate_sequence, blocking_issues, advisory_issues, is_scorable
 from src import provenance as prov_mod
@@ -222,6 +222,35 @@ def render_features(res: dict) -> None:
         "Grand average of hydropathy over the translated product.",
     )
     render_figure(cols[4], fmt(pi_value), "Isoelectric point (pI)", "Of the translated product.")
+
+    # Second row: the features added after the Welch analysis. They are measured
+    # on every construct and shown, but the deployed artifact was fitted before
+    # they existed, so they do not yet enter the prediction.
+    st.markdown("###### Additional measures")
+    extra = st.columns(5)
+    render_figure(
+        extra[0], fmt(f.get("gc3_content"), "%"), "GC3, wobble position",
+        "GC at the third base of each codon. The strongest single predictor of yield "
+        "on Welch's synonymous variants.",
+    )
+    render_figure(
+        extra[1], fmt(f.get("rare_codon_fraction")), "Rare codon fraction",
+        "Share of slowly-read codons. A moderate share is associated with higher yield, "
+        "not lower.",
+    )
+    render_figure(
+        extra[2], fmt(f.get("genewide_folding_avg")), "Folding energy, kcal/mol",
+        f"Real ViennaRNA minimum free energy, averaged over {FOLDING_AVG_WINDOW_NT} nt sliding "
+        "windows. Unlike the proxy above, an actual thermodynamic fold.",
+    )
+
+    if f.get("genewide_folding_avg") is None or (
+        isinstance(f.get("genewide_folding_avg"), float) and np.isnan(f["genewide_folding_avg"])
+    ):
+        st.caption(
+            "Folding energy reads N/A because ViennaRNA is not installed. Install it with "
+            "`pip install ViennaRNA` to compute real folding energies."
+        )
 
     if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in (gravy_score, pi_value)):
         st.caption(

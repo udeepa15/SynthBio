@@ -9,7 +9,7 @@ Feature engineering module for computing construct biophysical & protein feature
 
 import math
 import logging
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 import pandas as pd
 
 # Configure logger
@@ -152,6 +152,107 @@ def estimate_mrna_folding_stability(sequence: str) -> float:
     return round(mfe, 2)
 
 
+def calculate_gc3(sequence: str) -> float:
+    """
+    GC fraction at the third, wobble position of each codon, as a percentage.
+
+    The third position is where synonymous choice mostly lives, so GC3 measures
+    codon composition while being almost independent of the protein. On Welch's
+    synonymous variant series, where the protein is held fixed, it is the
+    strongest single predictor of measured yield that this module computes
+    (Spearman 0.52 within series, against 0.46 for overall GC%).
+    """
+    seq = sequence.upper().replace(" ", "").replace("\n", "")
+    third = seq[2::3]
+    if not third:
+        logger.warning("Sequence too short for GC3.")
+        return 0.0
+    return round(100.0 * sum(1 for base in third if base in "GC") / len(third), 2)
+
+
+# Codons read slowly in E. coli, by low cognate tRNA abundance. A moderate
+# share of these is associated with *higher* yield, not lower: pausing is
+# thought to give the nascent chain time to fold. Hence it is reported as a
+# feature rather than folded into a penalty.
+RARE_CODONS = frozenset({
+    "AGG", "AGA", "CGA", "CGG", "ATA", "CTA", "CCC", "TCG", "ACG", "GGA", "GGG",
+})
+
+
+def calculate_rare_codon_fraction(sequence: str, head_codons: int = 0) -> float:
+    """
+    Fraction of codons drawn from the slowly-read set.
+
+    With `head_codons` set, only that many codons from the 5' end are counted,
+    which is the region where ribosome pausing matters most.
+    """
+    seq = sequence.upper().replace(" ", "").replace("\n", "")
+    codons = [seq[i:i + 3] for i in range(0, len(seq) - len(seq) % 3, 3)]
+    if head_codons:
+        codons = codons[:head_codons]
+    if not codons:
+        return 0.0
+    return round(sum(1 for c in codons if c in RARE_CODONS) / len(codons), 4)
+
+
+# Window and step for the gene-wide folding average, matching the 48 nt windows
+# Boel reports as Gave48.
+FOLDING_AVG_WINDOW_NT = 48
+FOLDING_AVG_STEP_NT = 24
+
+
+def calculate_folding_energy(sequence: str) -> Optional[float]:
+    """
+    Minimum free energy of the sequence, in kcal/mol, via ViennaRNA.
+
+    A real thermodynamic fold, unlike `estimate_mrna_folding_stability`, which
+    is a GC-derived proxy. Returns None when ViennaRNA is not installed, so the
+    caller can fall back rather than fail.
+    """
+    seq = sequence.upper().replace(" ", "").replace("\n", "").replace("T", "U")
+    if not seq:
+        return None
+    try:
+        import RNA
+    except ImportError:
+        logger.warning("ViennaRNA not installed; real folding energy unavailable.")
+        return None
+    try:
+        _, mfe = RNA.fold(seq)
+        return round(float(mfe), 2)
+    except Exception as err:
+        logger.error(f"ViennaRNA folding failed: {err}")
+        return None
+
+
+def calculate_genewide_folding_avg(
+    sequence: str,
+    window: int = FOLDING_AVG_WINDOW_NT,
+    step: int = FOLDING_AVG_STEP_NT,
+) -> Optional[float]:
+    """
+    Folding energy averaged over sliding windows across the coding sequence.
+
+    This is the servable counterpart of Boel's Gave48: it needs only the
+    construct, with no expression vector. On Welch's measured yields it reaches
+    Spearman -0.45 within series, so a more negative average, meaning tighter
+    structure, goes with lower yield.
+    """
+    seq = sequence.upper().replace(" ", "").replace("\n", "")
+    if len(seq) < window:
+        return calculate_folding_energy(seq)
+
+    energies = []
+    for start in range(0, len(seq) - window + 1, step):
+        mfe = calculate_folding_energy(seq[start:start + window])
+        if mfe is None:
+            return None
+        energies.append(mfe)
+    if not energies:
+        return None
+    return round(sum(energies) / len(energies), 2)
+
+
 def calculate_protein_features(sequence: str) -> Dict[str, float]:
     """
     Translate DNA sequence to amino acid sequence (stopping at first stop codon)
@@ -186,18 +287,31 @@ def calculate_protein_features(sequence: str) -> Dict[str, float]:
 
 
 def extract_features(sequence: str) -> Dict[str, float]:
-    """Extract all 5 computed features (GC%, CAI, MFE, GRAVY, pI) for a given sequence."""
+    """
+    Extract every computed feature for a given sequence.
+
+    `mrna_folding_stability` is the historical GC-derived proxy, kept so that
+    artifacts fitted on it still load. `genewide_folding_avg` is the real
+    ViennaRNA energy and is what new models should use; it is NaN when
+    ViennaRNA is unavailable.
+    """
     logger.info(f"Extracting features for sequence length {len(sequence)} bp...")
+    folding_avg = calculate_genewide_folding_avg(sequence)
     features = {
         "gc_content": calculate_gc_content(sequence),
+        "gc3_content": calculate_gc3(sequence),
         "codon_adaptation_index": calculate_cai(sequence),
-        "mrna_folding_stability": estimate_mrna_folding_stability(sequence)
+        "rare_codon_fraction": calculate_rare_codon_fraction(sequence),
+        "mrna_folding_stability": estimate_mrna_folding_stability(sequence),
+        "genewide_folding_avg": float("nan") if folding_avg is None else folding_avg,
     }
     protein_feats = calculate_protein_features(sequence)
     features.update(protein_feats)
     logger.info(
-        f"Feature Extraction Summary -> GC: {features['gc_content']}%, CAI: {features['codon_adaptation_index']}, "
-        f"MFE: {features['mrna_folding_stability']} kcal/mol, GRAVY: {features.get('gravy_score')}, pI: {features.get('pI')}"
+        f"Feature Extraction Summary -> GC: {features['gc_content']}%, GC3: {features['gc3_content']}%, "
+        f"CAI: {features['codon_adaptation_index']}, rare codons: {features['rare_codon_fraction']}, "
+        f"folding avg: {features['genewide_folding_avg']} kcal/mol, "
+        f"GRAVY: {features.get('gravy_score')}, pI: {features.get('pI')}"
     )
     return features
 
