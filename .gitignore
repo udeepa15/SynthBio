@@ -18,10 +18,15 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+# Training table the deployed model was fitted on (see models/baseline_model_metadata.json)
+!data/processed/feature_table_v4.csv
 
 # Models & Artifacts
 models/*
 !models/.gitkeep
+# Deployed model artifact, needed by app/main.py at runtime
+!models/baseline_model.joblib
+!models/baseline_model_metadata.json
 
 # Environment & IDE
 .env

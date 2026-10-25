@@ -1,0 +1,108 @@
+{
+  "created_at": "2026-10-25T16:43:46",
+  "model_class": "XGBClassifier",
+  "model_params": {
+    "objective": "multi:softprob",
+    "n_estimators": 800,
+    "max_depth": 4,
+    "learning_rate": 0.03,
+    "subsample": 0.8,
+    "colsample_bytree": 1.0,
+    "min_child_weight": 1,
+    "reg_lambda": 10,
+    "random_state": 42,
+    "tree_method": "hist"
+  },
+  "training_data": {
+    "path": "data/processed/feature_table_v4.csv",
+    "sha256": "d940ebf736f61f9985f268058259125bf52afd5144d0f4addbf1275fd3c0d6be",
+    "dataset": "Bo\u00ebl et al. 2016 (JMB), NESG E. coli expression set",
+    "n_rows": 6348,
+    "class_counts": {
+      "0": 1754,
+      "1": 131,
+      "2": 423,
+      "3": 896,
+      "4": 1171,
+      "5": 1973
+    }
+  },
+  "features": [
+    "GC_percent",
+    "GC3",
+    "CAI",
+    "rare_codon_fraction",
+    "rare_codons_head30",
+    "head_folding_48",
+    "genewide_folding_avg",
+    "gravy_score",
+    "pI",
+    "length_codons"
+  ],
+  "servable_only": true,
+  "feature_ranges": {
+    "GC_percent": {
+      "min": 21.57,
+      "max": 78.52
+    },
+    "GC3": {
+      "min": 5.05,
+      "max": 98.74
+    },
+    "CAI": {
+      "min": 0.19,
+      "max": 0.7
+    },
+    "rare_codon_fraction": {
+      "min": 0.0,
+      "max": 0.3333
+    },
+    "rare_codons_head30": {
+      "min": 0.0,
+      "max": 0.4667
+    },
+    "head_folding_48": {
+      "min": -27.7,
+      "max": 0.0
+    },
+    "genewide_folding_avg": {
+      "min": -22.7,
+      "max": -1.64
+    },
+    "gravy_score": {
+      "min": -1.7076,
+      "max": 1.2404
+    },
+    "pI": {
+      "min": 4.05,
+      "max": 12.0
+    },
+    "length_codons": {
+      "min": 48.0,
+      "max": 931.0
+    }
+  },
+  "metrics": {
+    "test_accuracy": 0.3094488188976378,
+    "test_f1_macro": 0.22548830346501328,
+    "test_balanced_accuracy": 0.2271224914393645,
+    "baselines": {
+      "majority_accuracy": 0.3110236220472441,
+      "majority_f1_macro": 0.07907907907907909,
+      "random_accuracy": 0.24330708661417322,
+      "random_f1_macro": 0.18092419140859703
+    },
+    "cross_validation": {
+      "grouped_mean_f1_macro": 0.20851833552163962,
+      "grouped_std_f1_macro": 0.010060156581804277,
+      "n_groups": 168,
+      "n_splits": 5
+    }
+  },
+  "versions": {
+    "python": "3.12.10",
+    "scikit_learn": "1.9.1",
+    "pandas": "3.1.0",
+    "numpy": "2.5.4"
+  }
+}
