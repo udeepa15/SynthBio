@@ -34,3 +34,9 @@ models/*
 .pytest_cache/
 .coverage
 htmlcov/
+
+# External validation inputs & derived tables (large binaries / regenerable)
+data/external/*
+!data/external/.gitkeep
+data/validation/*
+!data/validation/.gitkeep
