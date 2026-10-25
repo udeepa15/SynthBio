@@ -5,7 +5,7 @@ computes construct failure risk score (0-100%), and calculates feature importanc
 """
 
 import logging
-from typing import Dict, Any, Tuple, Optional
+from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 import numpy as np
 from src.features import extract_features
@@ -21,6 +21,17 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 FEATURE_NAMES = ["gc_content", "codon_adaptation_index", "mrna_folding_stability"]
+
+# Which of the two paths produced the tier on screen.
+MODEL_SOURCE = "trained_model"
+HEURISTIC_SOURCE = "heuristic_rules"
+
+# Feature columns this module can compute from a pasted sequence, and therefore
+# the only columns a model may be fitted on if the application is to serve it.
+# The Boel folding columns are deliberately absent: they are RNAstructure
+# energies over the vector 5' UTR, which no sequence-only calculation here
+# reproduces.
+SERVABLE_FEATURES = ["GC_percent", "CAI", "folding_energy", "gravy_score", "pI"]
 TIER_MAPPING = {
     0: "Very Low (Tier 0)",
     1: "Low (Tier 1)",
@@ -74,7 +85,47 @@ def calculate_failure_risk(features: Dict[str, float]) -> float:
     return final_risk
 
 
-def predict_construct(sequence: str, model: Any = None, explainer: Any = None) -> Dict[str, Any]:
+def check_feature_ranges(
+    feat_df: pd.DataFrame,
+    ranges: Optional[Dict[str, Dict[str, float]]]
+) -> list:
+    """
+    Features of this construct that fall outside the model's training range.
+
+    A tree model extrapolates by repeating the nearest leaf it learned, so a
+    value beyond the training range yields a confident-looking answer with
+    nothing behind it. The caller is expected to surface these, not hide them.
+    """
+    if not ranges:
+        return []
+
+    outside = []
+    for name, bounds in ranges.items():
+        if name not in feat_df.columns:
+            continue
+        value = feat_df.iloc[0][name]
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            continue
+        low, high = bounds.get("min"), bounds.get("max")
+        if low is not None and value < low:
+            outside.append({"feature": name, "value": float(value), "min": low, "max": high, "side": "below"})
+        elif high is not None and value > high:
+            outside.append({"feature": name, "value": float(value), "min": low, "max": high, "side": "above"})
+
+    if outside:
+        logger.warning(
+            "Construct features outside the training range: "
+            + ", ".join(f"{o['feature']}={o['value']} ({o['side']} {o['min']}..{o['max']})" for o in outside)
+        )
+    return outside
+
+
+def predict_construct(
+    sequence: str,
+    model: Any = None,
+    explainer: Any = None,
+    feature_ranges: Optional[Dict[str, Dict[str, float]]] = None
+) -> Dict[str, Any]:
     """Run full inference pipeline for a given gene construct sequence."""
     logger.info(f"Starting construct prediction pipeline for input sequence ({len(sequence)} bp)...")
     
@@ -97,16 +148,30 @@ def predict_construct(sequence: str, model: Any = None, explainer: Any = None) -
     tier = None
     pred_yield = None
     pred_score = None
-    
-    # Run model prediction if trained model artifact is available
+    confidence = None
+    class_probabilities = None
+    prediction_source = HEURISTIC_SOURCE
+    unservable_features = []
+
+    # Run model prediction if trained model artifact is available.
+    #
+    # An artifact can require features this module does not compute: the Boel
+    # folding columns are RNAstructure energies over the vector 5' UTR, which no
+    # sequence-only calculation here reproduces. That is a configuration
+    # mismatch, not a runtime error, so it is reported by name rather than
+    # surfacing as a bare KeyError and quietly reverting to the rules.
     if model is not None and hasattr(model, "predict"):
+        model_cols = list(getattr(model, "feature_names_in_", feat_df.columns))
+        unservable_features = [c for c in model_cols if c not in feat_df.columns]
+        if unservable_features:
+            logger.error(
+                "Trained model requires features this pipeline cannot compute from a sequence: "
+                f"{', '.join(unservable_features)}. Falling back to biophysical heuristic rules."
+            )
+    if model is not None and hasattr(model, "predict") and not unservable_features:
         try:
             logger.info("Executing ML model prediction on construct features...")
-            if hasattr(model, "feature_names_in_"):
-                model_cols = list(model.feature_names_in_)
-                eval_df = feat_df[model_cols]
-            else:
-                eval_df = feat_df
+            eval_df = feat_df[model_cols]
             pred_class = int(model.predict(eval_df)[0])
             pred_score = pred_class
             if pred_class in TIER_MAPPING:
@@ -114,7 +179,16 @@ def predict_construct(sequence: str, model: Any = None, explainer: Any = None) -
             else:
                 tier = f"Tier {pred_class}"
             pred_yield = round(10.0 + (pred_class * 17.0), 1)
-            logger.info(f"ML Model Output -> Predicted Tier Score: {pred_score} ({tier}), Yield: {pred_yield} AU")
+            if hasattr(model, "predict_proba"):
+                probabilities = model.predict_proba(eval_df)[0]
+                classes = [int(c) for c in getattr(model, "classes_", range(len(probabilities)))]
+                class_probabilities = {c: float(p) for c, p in zip(classes, probabilities)}
+                confidence = float(max(probabilities))
+            prediction_source = MODEL_SOURCE
+            logger.info(
+                f"ML Model Output -> Predicted Tier Score: {pred_score} ({tier}), Yield: {pred_yield} AU"
+                + (f", Confidence: {confidence:.2f}" if confidence is not None else "")
+            )
         except Exception as err:
             logger.error(f"ML model prediction failed: {str(err)}. Falling back to biophysical heuristic mode.", exc_info=False)
 
@@ -171,7 +245,12 @@ def predict_construct(sequence: str, model: Any = None, explainer: Any = None) -
         "predicted_score": pred_score,
         "predicted_tier": tier,
         "predicted_yield": pred_yield,
-        "feature_importances": feature_importances
+        "feature_importances": feature_importances,
+        "confidence": confidence,
+        "class_probabilities": class_probabilities,
+        "out_of_range_features": check_feature_ranges(feat_df, feature_ranges),
+        "prediction_source": prediction_source,
+        "unservable_features": unservable_features,
     }
     logger.info("Construct prediction pipeline completed successfully.")
     return result_summary

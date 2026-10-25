@@ -1,12 +1,17 @@
-streamlit>=1.30.0
-xgboost>=2.0.0
-lightgbm>=4.0.0
-scikit-learn>=1.3.0
-pandas>=2.0.0
-numpy>=1.24.0
-biopython>=1.81
-shap>=0.43.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
-pyyaml>=6.0
-pytest>=7.4.0
+# Pinned to the versions a model artifact in models/ was built and validated
+# against. A joblib artifact is only guaranteed to load under the library
+# versions that produced it, and an unpinned `>=` install can silently pick up a
+# different scikit-learn or XGBoost than the saved model expects.
+# To move a pin: bump it here, retrain, and re-run the test suite.
+streamlit==1.66.1
+xgboost==3.4.1
+lightgbm==4.7.0
+scikit-learn==1.9.1
+pandas==3.1.0
+numpy==2.5.4
+biopython==1.88
+shap==0.54.1
+matplotlib==3.11.2
+seaborn==0.13.2
+pyyaml==6.0.3
+pytest==9.1.1
