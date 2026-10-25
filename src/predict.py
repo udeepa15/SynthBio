@@ -272,6 +272,7 @@ def predict_construct(
         "out_of_range_features": check_feature_ranges(feat_df, feature_ranges),
         "prediction_source": prediction_source,
         "unservable_features": unservable_features,
+        "feat_df": feat_df,
     }
     logger.info("Construct prediction pipeline completed successfully.")
     return result_summary

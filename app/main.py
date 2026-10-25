@@ -462,13 +462,21 @@ def main():
     st.divider()
 
     st.markdown("#### Model attribution")
-    feat_df = pd.DataFrame([{
-        "GC_percent": res["features"]["gc_content"],
-        "CAI": res["features"]["codon_adaptation_index"],
-        "folding_energy": res["features"]["mrna_folding_stability"],
-        "gravy_score": res["features"].get("gravy_score", np.nan),
-        "pI": res["features"].get("pI", np.nan),
-    }])
+    feat_df = res.get("feat_df")
+    if feat_df is None:
+        feat_df = pd.DataFrame([{
+            "GC_percent": res["features"]["gc_content"],
+            "GC3": res["features"].get("gc3_content", np.nan),
+            "CAI": res["features"]["codon_adaptation_index"],
+            "rare_codon_fraction": res["features"].get("rare_codon_fraction", np.nan),
+            "rare_codons_head30": res["features"].get("rare_codons_head30", np.nan),
+            "head_folding_48": res["features"].get("head_folding_48", np.nan),
+            "genewide_folding_avg": res["features"].get("genewide_folding_avg", np.nan),
+            "gravy_score": res["features"].get("gravy_score", np.nan),
+            "pI": res["features"].get("pI", np.nan),
+            "length_codons": res["features"].get("length_codons", np.nan),
+            "folding_energy": res["features"]["mrna_folding_stability"],
+        }])
     render_shap_waterfall(model, feat_df, predicted_class=res.get("predicted_score"))
 
     with st.expander("Feature contribution for this construct", expanded=False):

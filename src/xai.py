@@ -37,10 +37,35 @@ FEATURE_BIO_MAP = {
         "high_desc": "High GC content promotes tight mRNA secondary structure folding and slows down translation initiation in E. coli.",
         "low_desc": "Low GC content reduces overall mRNA stability and can lead to mRNA degradation."
     },
+    "GC3": {
+        "name": "GC3 (Wobble Position)",
+        "high_desc": "High GC at codon wobble positions reflects synonymous codon choice and correlates with higher yield in E. coli.",
+        "low_desc": "Low GC3 reflects AT-rich codon endings."
+    },
     "CAI": {
         "name": "Codon Adaptation Index (CAI)",
         "high_desc": "High CAI aligns with preferred E. coli tRNAs, accelerating translation elongation speed.",
         "low_desc": "Low CAI indicates rare codons that stall translation ribosomes, leading to premature termination or low yield."
+    },
+    "rare_codon_fraction": {
+        "name": "Rare Codon Fraction",
+        "high_desc": "Slowly read codons pause ribosomes, which can aid cotranslational folding.",
+        "low_desc": "Low rare codon fraction means translation proceeds rapidly with abundant tRNAs."
+    },
+    "rare_codons_head30": {
+        "name": "Rare Codons (5' Head 30)",
+        "high_desc": "Rare codons in the first 30 codons pause translation initiation to prevent ribosomal jamming.",
+        "low_desc": "Few rare codons in the initial 30 codons."
+    },
+    "head_folding_48": {
+        "name": "5' Head Folding Energy (kcal/mol)",
+        "high_desc": "Tightly structured 5' mRNA secondary hairpins impede ribosome entry.",
+        "low_desc": "Open 5' mRNA conformation facilitates ribosome loading."
+    },
+    "genewide_folding_avg": {
+        "name": "Gene-Wide Folding Energy (avg kcal/mol)",
+        "high_desc": "Tight gene-wide mRNA structures can slow down ribosomal transit.",
+        "low_desc": "Relaxed gene-wide folding allows smoother translation elongation."
     },
     "folding_energy": {
         "name": "5' folding proxy (GC-derived, not thermodynamic)",
@@ -56,6 +81,11 @@ FEATURE_BIO_MAP = {
         "name": "Isoelectric Point (pI)",
         "high_desc": "Basic pI relative to E. coli cytoplasmic pH (~7.2-7.6) influences net charge and protein-RNA electrostatic interaction.",
         "low_desc": "Acidic pI relative to cytoplasmic pH influences protein solubility and stability."
+    },
+    "length_codons": {
+        "name": "Transcript Length (Codons)",
+        "high_desc": "Longer proteins impose greater metabolic load on host translational machinery.",
+        "low_desc": "Shorter peptide chains express more efficiently in E. coli."
     }
 }
 
@@ -68,10 +98,16 @@ LOW_TIER_CEILING = 2  # Tiers 0-2 are low-expression outcomes.
 # be strong evidence for a low tier while its own value is favourable.
 FEATURE_VALUE_MIDPOINT = {
     "GC_percent": 55.0,
+    "GC3": 50.0,
     "CAI": 0.70,
+    "rare_codon_fraction": 0.05,
+    "rare_codons_head30": 0.05,
+    "head_folding_48": -15.0,
+    "genewide_folding_avg": -15.0,
     "folding_energy": -20.0,
     "gravy_score": 0.0,
     "pI": 7.4,
+    "length_codons": 300,
 }
 
 
@@ -85,8 +121,8 @@ def describe_feature_value(feature: str, value: Optional[float]) -> str:
     midpoint = FEATURE_VALUE_MIDPOINT.get(feature)
     if midpoint is None:
         return ""
-    # folding_energy runs negative: a value below the midpoint is the "high" case.
-    is_high = value < midpoint if feature == "folding_energy" else value > midpoint
+    # Folding energies run negative: a value below the midpoint is the tighter "high" case.
+    is_high = value < midpoint if feature in ("folding_energy", "head_folding_48", "genewide_folding_avg") else value > midpoint
     return meta["high_desc"] if is_high else meta["low_desc"]
 
 
@@ -124,11 +160,8 @@ def render_shap_waterfall(model: Any, input_df: pd.DataFrame, predicted_class: O
         try:
             logger.info(f"Preparing input features for SHAP Waterfall plot: {list(input_df.columns)}...")
             if hasattr(model, "feature_names_in_"):
-                cols = [c for c in list(model.feature_names_in_) if c in input_df.columns]
-                if cols:
-                    eval_df = input_df[cols]
-                else:
-                    eval_df = input_df
+                expected_cols = list(model.feature_names_in_)
+                eval_df = input_df.reindex(columns=expected_cols, fill_value=np.nan)
             else:
                 eval_df = input_df
 
