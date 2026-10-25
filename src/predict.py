@@ -139,7 +139,8 @@ def predict_construct(sequence: str, model: Any = None, explainer: Any = None) -
     shap_importances = {}
     if explainer is not None:
         logger.info("Computing local SHAP feature attributions...")
-        shap_importances = explain_prediction_shap(explainer, feat_df)
+        shap_df = feat_df[list(model.feature_names_in_)] if hasattr(model, "feature_names_in_") else feat_df
+        shap_importances = explain_prediction_shap(explainer, shap_df)
         
     if shap_importances:
         feature_importances = {
