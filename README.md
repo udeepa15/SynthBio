@@ -87,6 +87,32 @@ streamlit run app/main.py
 
 ---
 
+## 🧬 Synonymous Codon Redesign
+
+The **Redesign** tab searches for a DNA sequence encoding the same protein that the
+trained model scores higher, by swapping codons for synonymous alternatives. The model
+is used as the scoring function and is not retrained. Amino acid positions entered in
+"indices to conserve" are held fixed, as are the start codon and any terminal stop
+codon, and every candidate is checked against the original translation before it is
+accepted, so the protein never changes.
+
+GRAVY and the isoelectric point follow from the amino acid sequence, so no synonymous
+change can move them. Where either drives the failure, the tab recommends a fusion tag
+instead of offering a codon redesign.
+
+**Read the output with the calibration in mind.** The model performs at the majority
+class baseline, and on the Welch 2009 synonymous variant series the objective tracks
+measured yield in one series (+0.47) and runs against it in the other (-0.41), while
+GC3 tracks it positively in both (+0.39, +0.64). The tab therefore reports a
+corroboration check alongside every result, flagging a redesign whose model gain comes
+with a fall in GC3. Reproduce these figures with:
+
+```bash
+python scripts/redesign_sanity_check.py
+```
+
+---
+
 ## 🧪 Running Tests
 
 Execute unit tests to verify feature calculations and model outputs:

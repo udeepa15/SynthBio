@@ -26,12 +26,22 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-from src.predict import predict_construct
+from src.predict import predict_construct, build_feature_row
 from src.model import load_model, get_shap_explainer, load_model_metadata
 from src.features import fetch_ncbi_cds, FOLDING_WINDOW_NT, FOLDING_AVG_WINDOW_NT
 from src.xai import render_shap_waterfall
 from src.validation import validate_sequence, blocking_issues, advisory_issues, is_scorable
 from src import provenance as prov_mod
+from src.redesign import (
+    CONTRADICTED,
+    CORROBORATED,
+    DEFAULT_CANDIDATES_PER_ROUND,
+    DEFAULT_ROUNDS,
+    WELCH_CALIBRATION,
+    optimize_sequence,
+    parse_conserved_regions,
+    split_codons,
+)
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "baseline_model.joblib")
 
@@ -320,6 +330,264 @@ def render_validation_issues(issues) -> None:
         st.warning(f"**{issue.title}.** {issue.detail} {issue.remedy}", icon="⚠️")
 
 
+def render_calibration_notice() -> None:
+    """
+    How the redesign objective behaved on the one dataset that can test it.
+
+    Shown before any result, not folded away behind an expander, because a tier
+    gain from this model reads as a result and on one of the two Welch series
+    the objective runs against measured yield. A user who sees the gain without
+    this line would draw a conclusion the evidence does not support.
+    """
+    lines = ", ".join(
+        f"{row['series']} (n={row['n']}) {row['objective']:+.2f} for the model against "
+        f"{row['gc3']:+.2f} for GC3"
+        for row in WELCH_CALIBRATION
+    )
+    st.warning(
+        "**Read the score with this in mind.** The model this search optimises against currently "
+        "performs at the majority class baseline, so a rise in predicted tier is not by itself "
+        "evidence of a rise in measured yield. On the Welch 2009 series of synonymous variants, "
+        "where measured yield is available, the rank correlation of the objective against yield is "
+        f"{lines}. The objective therefore points the right way in one series and the wrong way in "
+        "the other, while GC3 points the right way in both. The corroboration check below compares "
+        "the two on your construct.",
+        icon="⚠️",
+    )
+
+
+def render_redesign_controls(normalised: str) -> dict:
+    """The conserved-region lock and the search budget."""
+    n_codons = len(split_codons(normalised))
+
+    conserved_text = st.text_input(
+        "Amino acid indices to conserve",
+        value="",
+        placeholder="e.g. 45-60, 102, 210-215",
+        help=(
+            "Positions held fixed, counting the initial methionine as 1. Use this for a catalytic "
+            "site, a binding motif or any region where the exact codons matter. Everything else is "
+            "open to synonymous change. Leave empty to allow changes throughout."
+        ),
+    )
+
+    spec = parse_conserved_regions(conserved_text, n_codons)
+    for problem in spec.problems:
+        st.warning(problem, icon="⚠️")
+    if spec.regions:
+        st.caption(
+            f"Holding {len(spec.locked)} of {n_codons} codons fixed at amino acids {spec.described}. "
+            "The start codon and any terminal stop codon are always held fixed as well."
+        )
+
+    with st.expander("Search budget", expanded=False):
+        st.caption(
+            "Each candidate costs one full feature extraction, dominated by the ViennaRNA fold, so "
+            "the run time scales with both of these and with the length of the construct."
+        )
+        budget_cols = st.columns(2)
+        candidates = budget_cols[0].slider(
+            "Candidates per round", min_value=10, max_value=100,
+            value=DEFAULT_CANDIDATES_PER_ROUND, step=10,
+        )
+        rounds = budget_cols[1].slider(
+            "Rounds", min_value=2, max_value=20, value=DEFAULT_ROUNDS, step=1,
+        )
+
+    return {"conserved_text": conserved_text, "candidates": candidates, "rounds": rounds}
+
+
+def render_tag_recommendations(result) -> None:
+    """
+    The failure modes a synonymous redesign cannot touch.
+
+    GRAVY and the isoelectric point follow from the amino acid sequence, so a
+    codon swap leaves both exactly where they were. Where either drives the
+    failure, the remedy is a fusion tag, and saying so is the whole point of
+    checking.
+    """
+    if not result.tag_recommendations:
+        return
+
+    drivers = " and ".join(rec.driver for rec in result.tag_recommendations)
+    st.error(
+        f"**Synonymous optimisation cannot fix this construct on its own.** The failure is driven by "
+        f"{drivers}, which a codon redesign leaves unchanged by construction.",
+        icon="⛔",
+    )
+    for rec in result.tag_recommendations:
+        st.markdown(f"**{rec.driver}**")
+        st.caption(rec.detail)
+        st.info(f"**Recommendation.** {rec.recommendation}", icon="🧪")
+
+
+def render_redesign_verdict(result) -> None:
+    """Tier before and after, the corroboration check, then the evidence."""
+    original, best = result.original, result.best
+
+    st.markdown("#### Redesign outcome")
+    cols = st.columns(4)
+    render_figure(cols[0], str(original.tier_class), "Original tier", original.tier_label)
+    render_figure(cols[1], str(best.tier_class), "Redesigned tier", best.tier_label)
+    render_figure(
+        cols[2], f"{result.expected_tier_gain:+.3f}", "Change in the objective",
+        f"Expected tier {original.expected_tier:.3f} to {best.expected_tier:.3f}. The objective is "
+        "the probability weighted mean over the six tiers, which is what the search climbs.",
+    )
+    render_figure(
+        cols[3], f"{result.codons_changed}", "Codons changed",
+        f"Of {result.codons_mutable} that were open to change, from "
+        f"{result.candidates_scored} candidates scored.",
+    )
+
+    if not result.improved:
+        st.info(
+            "The search did not find a synonymous variant the model scores above your construct. "
+            "That is a result in itself: on this model's view the codon usage is already as good as "
+            "this protein allows, so a redesign is not where the remedy lies.",
+            icon="ℹ️",
+        )
+
+    corr = result.corroboration()
+    if corr.verdict == CONTRADICTED:
+        st.error(
+            "**The two signals disagree, so do not synthesise this redesign.** " + corr.summary,
+            icon="⛔",
+        )
+    elif corr.verdict == CORROBORATED:
+        st.success("**Corroborated by GC3.** " + corr.summary, icon="✅")
+    else:
+        st.info("**Corroboration inconclusive.** " + corr.summary, icon="ℹ️")
+
+    st.caption(
+        "The protein is unchanged. Every candidate is checked against the original translation "
+        "before it is accepted, so the redesigned DNA encodes exactly the same amino acid sequence."
+    )
+
+
+def render_redesign_evidence(result) -> None:
+    """The feature movement, the changed codons and the search trace."""
+    st.markdown("#### What changed")
+    st.caption(
+        "Only the features a codon swap can move are listed. GRAVY and the isoelectric point are "
+        "identical by construction and are therefore left out."
+    )
+    st.dataframe(result.feature_comparison(), hide_index=True, use_container_width=True)
+
+    changed = result.changed_codon_table()
+    if not changed.empty:
+        with st.expander(f"The {len(changed)} codons that changed", expanded=False):
+            st.dataframe(changed, hide_index=True, use_container_width=True)
+
+    with st.expander("Search trace", expanded=False):
+        st.caption(
+            "The best objective value after each round. A flat run of rounds is the search failing "
+            "to improve, at which point it halves the number of swaps per candidate and tries a "
+            "finer step."
+        )
+        st.line_chart(pd.DataFrame({"Best objective": result.history}))
+
+    st.markdown("#### Redesigned sequence")
+    st.text_area(
+        "Optimised coding DNA, 5' to 3'", value=result.best.sequence, height=160, disabled=True,
+    )
+    st.download_button(
+        "Download the redesigned sequence (FASTA)",
+        data=f">synthbio_redesign codons_changed={result.codons_changed}\n{result.best.sequence}\n",
+        file_name="synthbio_redesign.fasta",
+        mime="text/plain",
+    )
+
+
+def render_redesign(normalised: str, model, res: dict) -> None:
+    """
+    The redesign tab: search for a better synonymous variant of this construct.
+
+    The run is gated on a button because it scores hundreds of candidates and
+    takes tens of seconds, which is not something to repeat on every Streamlit
+    rerun.
+    """
+    st.markdown(
+        "Searches for a DNA sequence encoding the same protein that the model scores higher, by "
+        "swapping codons for synonymous alternatives. The protein never changes."
+    )
+
+    if model is None:
+        st.error(
+            "**A redesign needs the trained model.** The search ranks candidates by the model's "
+            "predicted tier, and this session is running on the biophysical fallback rules, which "
+            "have no tier to optimise against. Train a model with the pipeline, or restore the "
+            "artifact in models/, to enable the redesign.",
+            icon="⛔",
+        )
+        return
+
+    render_calibration_notice()
+    controls = render_redesign_controls(normalised)
+
+    run_key = (normalised, controls["conserved_text"], controls["candidates"], controls["rounds"])
+    cached = st.session_state.get("redesign_result")
+    cached_key = st.session_state.get("redesign_key")
+
+    if st.button("Redesign construct", type="primary"):
+        status = st.empty()
+        bar = st.progress(0.0)
+
+        def report(round_index: int, rounds: int, score: float) -> None:
+            bar.progress(round_index / rounds)
+            status.caption(f"Round {round_index} of {rounds}. Best objective so far {score:.3f}.")
+
+        logger.info(f"Redesign requested for {len(normalised)} nt, conserved='{controls['conserved_text']}'")
+        try:
+            result = optimize_sequence(
+                normalised,
+                model=model,
+                conserved_text=controls["conserved_text"],
+                candidates_per_round=controls["candidates"],
+                rounds=controls["rounds"],
+                progress=report,
+            )
+        except ValueError as err:
+            bar.empty()
+            status.empty()
+            st.error(f"The redesign could not run: {err}", icon="⛔")
+            return
+        except Exception as err:
+            bar.empty()
+            status.empty()
+            logger.error(f"Redesign failed: {err}", exc_info=True)
+            st.error(f"The redesign failed: {err}", icon="⛔")
+            return
+
+        bar.empty()
+        status.empty()
+        st.session_state["redesign_result"] = result
+        st.session_state["redesign_key"] = run_key
+        cached, cached_key = result, run_key
+
+    if cached is None:
+        st.info(
+            "Select Redesign construct to run the search. It scores a few hundred candidate "
+            "sequences, so expect it to take tens of seconds.",
+            icon="ℹ️",
+        )
+        return
+
+    if cached_key != run_key:
+        st.info(
+            "The sequence or the settings changed since the last redesign. Select Redesign "
+            "construct to run it again.",
+            icon="ℹ️",
+        )
+        return
+
+    render_tag_recommendations(cached)
+    st.divider()
+    render_redesign_verdict(cached)
+    st.divider()
+    render_redesign_evidence(cached)
+
+
 def main():
     st.set_page_config(
         page_title="SynthBio | Construct Failure Predictor",
@@ -453,7 +721,21 @@ def main():
         st.error(f"The prediction could not be completed: {pipeline_err}")
         return
 
-    # Vertical hierarchy: verdict, features, diagnostics, attribution.
+    # Two output tabs. Only the results are split this way, never the inputs:
+    # Streamlit renders every tab on every run, so an input inside a tab stays
+    # live whether or not the tab is open, which is the bug that made the
+    # sequence source ambiguous before. Reading a rendered result costs nothing.
+    diagnosis_tab, redesign_tab = st.tabs(["Diagnosis", "Redesign"])
+
+    with diagnosis_tab:
+        render_diagnosis(res, prov, model)
+
+    with redesign_tab:
+        render_redesign(normalised, model, res)
+
+
+def render_diagnosis(res: dict, prov, model) -> None:
+    """Vertical hierarchy: verdict, features, diagnostics, attribution."""
     render_verdict(res, prov)
     st.divider()
     render_features(res)
@@ -464,19 +746,7 @@ def main():
     st.markdown("#### Model attribution")
     feat_df = res.get("feat_df")
     if feat_df is None:
-        feat_df = pd.DataFrame([{
-            "GC_percent": res["features"]["gc_content"],
-            "GC3": res["features"].get("gc3_content", np.nan),
-            "CAI": res["features"]["codon_adaptation_index"],
-            "rare_codon_fraction": res["features"].get("rare_codon_fraction", np.nan),
-            "rare_codons_head30": res["features"].get("rare_codons_head30", np.nan),
-            "head_folding_48": res["features"].get("head_folding_48", np.nan),
-            "genewide_folding_avg": res["features"].get("genewide_folding_avg", np.nan),
-            "gravy_score": res["features"].get("gravy_score", np.nan),
-            "pI": res["features"].get("pI", np.nan),
-            "length_codons": res["features"].get("length_codons", np.nan),
-            "folding_energy": res["features"]["mrna_folding_stability"],
-        }])
+        feat_df = build_feature_row(res["features"])
     render_shap_waterfall(model, feat_df, predicted_class=res.get("predicted_score"))
 
     with st.expander("Feature contribution for this construct", expanded=False):

@@ -100,6 +100,34 @@ def calculate_failure_risk(features: Dict[str, float]) -> float:
     return final_risk
 
 
+def build_feature_row(features: Dict[str, float]) -> pd.DataFrame:
+    """
+    One-row frame of model feature columns, from an `extract_features` dict.
+
+    The feature extractor and the model use different names for the same
+    quantities, so this is the single place the two vocabularies meet. Anything
+    that scores a sequence through the model goes through here, so that the
+    redesign engine cannot drift from what the predictor feeds the model.
+
+    `folding_energy` carries the historical GC-derived proxy, kept because
+    artifacts fitted on it still load. `genewide_folding_avg` is the real
+    ViennaRNA energy.
+    """
+    return pd.DataFrame([{
+        "GC_percent": features["gc_content"],
+        "GC3": features.get("gc3_content", np.nan),
+        "CAI": features["codon_adaptation_index"],
+        "rare_codon_fraction": features.get("rare_codon_fraction", np.nan),
+        "rare_codons_head30": features.get("rare_codons_head30", np.nan),
+        "head_folding_48": features.get("head_folding_48", np.nan),
+        "genewide_folding_avg": features.get("genewide_folding_avg", np.nan),
+        "gravy_score": features.get("gravy_score", np.nan),
+        "pI": features.get("pI", np.nan),
+        "length_codons": features.get("length_codons", np.nan),
+        "folding_energy": features["mrna_folding_stability"],
+    }])
+
+
 def check_feature_ranges(
     feat_df: pd.DataFrame,
     ranges: Optional[Dict[str, Dict[str, float]]]
@@ -152,20 +180,9 @@ def predict_construct(
     risk_score = calculate_failure_risk(features)
     
     # Prepare feature dataframe matching model expectations
-    feat_df = pd.DataFrame([{
-        "GC_percent": features["gc_content"],
-        "GC3": features.get("gc3_content", np.nan),
-        "CAI": features["codon_adaptation_index"],
-        "rare_codon_fraction": features.get("rare_codon_fraction", np.nan),
-        "rare_codons_head30": features.get("rare_codons_head30", np.nan),
-        "head_folding_48": features.get("head_folding_48", np.nan),
-        "genewide_folding_avg": features.get("genewide_folding_avg", np.nan),
-        "gravy_score": features.get("gravy_score", np.nan),
-        "pI": features.get("pI", np.nan),
-        "length_codons": features.get("length_codons", np.nan),
-        "folding_energy": features["mrna_folding_stability"],
-    }])
-    
+    feat_df = build_feature_row(features)
+
+
     tier = None
     pred_yield = None
     pred_score = None
