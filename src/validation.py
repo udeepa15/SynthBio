@@ -31,6 +31,13 @@ AMBIGUITY_CODES = set("RYSWKMBDHVN")
 START_CODON = "ATG"
 STOP_CODONS = {"TAA", "TAG", "TGA"}
 
+# Above this length the input is a genome, plasmid or contig rather than one
+# coding sequence. The longest E. coli CDS is around 10 kb, so 30 kb leaves
+# generous room for an unusual construct while still catching a whole-genome
+# accession, which otherwise arrives as a frame error, a missing start codon and
+# tens of thousands of internal stops, none of which name the actual problem.
+MAX_CDS_NT = 30_000
+
 # FOLDING_WINDOW_NT is imported from features: below that length the folding
 # proxy is computed over the whole construct rather than the 5' window it is
 # defined over, so the feature describes a different region than it claims to.
@@ -82,6 +89,26 @@ def validate_sequence(raw: str) -> Tuple[str, List[SequenceIssue]]:
             title="No sequence provided",
             detail="The input is empty once whitespace and FASTA header lines are removed.",
             remedy="Paste a coding DNA sequence, or fetch one by NCBI accession on the other tab.",
+            blocking=True,
+        ))
+        return seq, issues
+
+    # Far too long to be one coding sequence. Reported alone, because every
+    # later check would also fire and bury the one finding that explains them.
+    if len(seq) > MAX_CDS_NT:
+        issues.append(SequenceIssue(
+            code="not_a_coding_sequence",
+            title="This looks like a genome or plasmid, not a single gene",
+            detail=(
+                f"The input is {len(seq):,} nt. A coding sequence for E. coli expression is "
+                f"typically a few hundred to a few thousand, and the longest known is around "
+                f"10,000. A whole-genome or plasmid accession is the usual cause."
+            ),
+            remedy=(
+                "Supply one gene's coding sequence, from its ATG to its stop codon. On NCBI, "
+                "open the genome record's annotation and use the CDS entry for the gene you "
+                "want, rather than the genome accession itself."
+            ),
             blocking=True,
         ))
         return seq, issues

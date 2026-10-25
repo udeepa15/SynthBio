@@ -18,6 +18,33 @@ def codes(issues):
     return {i.code for i in issues}
 
 
+def test_genome_length_input_is_reported_as_such():
+    """
+    A whole-genome accession must be named, not described by its symptoms.
+
+    Pasting one used to produce a frame error, a missing start codon and a count
+    of tens of thousands of internal stops, none of which said the input was a
+    genome rather than a gene.
+    """
+    from src.validation import MAX_CDS_NT
+
+    genome = "ATG" + "AGC" * ((MAX_CDS_NT // 3) + 10)
+    _, issues = validate_sequence(genome)
+
+    assert [i.code for i in issues] == ["not_a_coding_sequence"]
+    assert issues[0].blocking
+    assert not is_scorable(issues)
+
+
+def test_a_long_but_plausible_cds_is_still_scored():
+    """The length guard must not reject an unusually long but legitimate gene."""
+    long_cds = "ATG" + "GCT" * 3000 + "TAA"
+    _, issues = validate_sequence(long_cds)
+
+    assert "not_a_coding_sequence" not in codes(issues)
+    assert is_scorable(issues)
+
+
 def test_valid_sequence_has_no_issues():
     seq, issues = validate_sequence(VALID)
     assert seq == VALID

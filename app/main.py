@@ -336,10 +336,18 @@ def main():
         sequence_input = raw_seq
 
     with tab_ncbi:
+        # The examples are single-gene records on purpose. An earlier revision
+        # offered NC_000913, the E. coli K-12 chromosome, which fetches 4.6 Mb
+        # and can only ever be rejected.
         accession_id = st.text_input(
             "NCBI accession number",
             value="",
-            placeholder="e.g. M19447, J04639.1, NC_000913",
+            placeholder="A single gene or CDS record, e.g. M19447, J04639.1",
+            help=(
+                "The record must hold one gene's coding sequence. A genome, plasmid or "
+                "contig accession cannot be scored: open its annotation on NCBI and use "
+                "the CDS entry for the gene you want."
+            ),
         ).strip()
         if accession_id:
             logger.info(f"NCBI accession fetch requested for '{accession_id}'")
