@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from src.redesign import (
+    CONSTRAINED,
     CONTRADICTED,
     CORROBORATED,
     PI_AGGREGATION_WINDOW,
@@ -256,3 +257,73 @@ def test_falling_gc3_contradicts_a_gain():
 
 def test_no_gain_is_inconclusive():
     assert corroborate(_Stub(False, 50.0, 55.0)).verdict == "inconclusive"
+
+
+class _AntiGc3Model(_FakeModel):
+    """Rewards LOW GC3, the model's documented failure on synonymous variants."""
+
+    def predict_proba(self, frame):
+        return super().predict_proba(frame)[:, ::-1]
+
+
+def _gc3(sequence):
+    codons = split_codons(sequence)
+    return sum(1 for c in codons if c[2] in "GC") / len(codons)
+
+
+def test_hold_gc3_never_lowers_gc3_in_any_variant():
+    original = _gc3(SEQUENCE)
+    for variant in generate_variants(SEQUENCE, n_variants=60, n_swaps=6, seed=3, hold_gc3=True):
+        assert _gc3(variant) >= original - 1e-9
+        assert translate_codons(split_codons(variant)) == translate_codons(split_codons(SEQUENCE))
+
+
+def test_hold_gc3_excludes_codons_that_could_only_lose_gc3():
+    codons = split_codons(SEQUENCE)
+    free = set(mutable_positions(codons, set()))
+    held = set(mutable_positions(codons, set(), hold_gc3=True))
+    assert held <= free
+    # Lysine AAG has only AAA as an alternative, which would lower GC3.
+    assert "AAG" not in [codons[i] for i in held]
+
+
+def test_hold_gc3_resists_a_model_that_rewards_lower_gc3():
+    free = optimize_sequence(SEQUENCE, model=_AntiGc3Model(), rounds=6, candidates_per_round=16, seed=1)
+    held = optimize_sequence(
+        SEQUENCE, model=_AntiGc3Model(), rounds=6, candidates_per_round=16, seed=1, hold_gc3=True,
+    )
+    assert _gc3(free.best.sequence) < _gc3(SEQUENCE)
+    assert _gc3(held.best.sequence) >= _gc3(SEQUENCE) - 1e-9
+    assert held.hold_gc3 is True
+
+
+def test_hold_gc3_is_reported_as_constrained_not_corroborated():
+    result = optimize_sequence(
+        SEQUENCE, model=_FakeModel(), rounds=4, candidates_per_round=10, seed=2, hold_gc3=True,
+    )
+    verdict = result.corroboration()
+    if result.improved:
+        assert verdict.verdict == CONSTRAINED
+        assert verdict.constrained is True
+        assert "not independent" in verdict.summary
+
+
+def test_region_limit_leaves_the_rest_of_the_gene_untouched():
+    original = split_codons(SEQUENCE)
+    result = optimize_sequence(
+        SEQUENCE, model=_FakeModel(), rounds=4, candidates_per_round=10, seed=8, region_codons=12,
+    )
+    best = split_codons(result.best.sequence)
+    assert best[12:] == original[12:]
+    assert result.region_codons == 12
+
+
+def test_region_limit_applies_to_generated_variants_too():
+    original = split_codons(SEQUENCE)
+    for variant in generate_variants(SEQUENCE, n_variants=30, n_swaps=4, seed=4, region_codons=10):
+        assert split_codons(variant)[10:] == original[10:]
+
+
+def test_negative_region_is_refused():
+    with pytest.raises(ValueError):
+        optimize_sequence(SEQUENCE, model=_FakeModel(), region_codons=-1)

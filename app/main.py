@@ -33,6 +33,7 @@ from src.xai import render_shap_waterfall
 from src.validation import validate_sequence, blocking_issues, advisory_issues, is_scorable
 from src import provenance as prov_mod
 from src.redesign import (
+    CONSTRAINED,
     CONTRADICTED,
     CORROBORATED,
     DEFAULT_CANDIDATES_PER_ROUND,
@@ -357,7 +358,7 @@ def render_calibration_notice() -> None:
 
 
 def render_redesign_controls(normalised: str) -> dict:
-    """The conserved-region lock and the search budget."""
+    """The conserved-region lock, the two search constraints and the search budget."""
     n_codons = len(split_codons(normalised))
 
     conserved_text = st.text_input(
@@ -380,6 +381,27 @@ def render_redesign_controls(normalised: str) -> dict:
             "The start codon and any terminal stop codon are always held fixed as well."
         )
 
+    hold_gc3 = st.checkbox(
+        "Hold GC3 at or above the original",
+        value=True,
+        help=(
+            "Forbids any swap that turns a G or C at the third codon position into an A or T. On the "
+            "Welch synonymous variants GC3 tracks measured yield in both series while the model "
+            "ranks one series backwards, so this stops the search buying a model gain by lowering "
+            "GC3. Because agreement with GC3 is then built in, the corroboration check can no "
+            "longer count it as independent evidence."
+        ),
+    )
+    region_codons = int(st.number_input(
+        "Limit changes to the first N codons (0 for the whole gene)",
+        min_value=0, max_value=max(n_codons, 1), value=0, step=1,
+        help=(
+            "Restricts the redesign to the start of the gene, where the evidence for a synonymous "
+            "effect is best: the fold over the ribosome binding region and rare codons at "
+            "initiation. Everything after codon N stays exactly as you entered it."
+        ),
+    ))
+
     with st.expander("Search budget", expanded=False):
         st.caption(
             "Each candidate costs one full feature extraction, dominated by the ViennaRNA fold, so "
@@ -394,7 +416,10 @@ def render_redesign_controls(normalised: str) -> dict:
             "Rounds", min_value=2, max_value=20, value=DEFAULT_ROUNDS, step=1,
         )
 
-    return {"conserved_text": conserved_text, "candidates": candidates, "rounds": rounds}
+    return {
+        "conserved_text": conserved_text, "candidates": candidates, "rounds": rounds,
+        "hold_gc3": hold_gc3, "region_codons": region_codons,
+    }
 
 
 def render_tag_recommendations(result) -> None:
@@ -456,6 +481,8 @@ def render_redesign_verdict(result) -> None:
         )
     elif corr.verdict == CORROBORATED:
         st.success("**Corroborated by GC3.** " + corr.summary, icon="✅")
+    elif corr.verdict == CONSTRAINED:
+        st.warning("**GC3 was held, so this is not independent corroboration.** " + corr.summary, icon="⚠️")
     else:
         st.info("**Corroboration inconclusive.** " + corr.summary, icon="ℹ️")
 
@@ -525,7 +552,10 @@ def render_redesign(normalised: str, model, res: dict) -> None:
     render_calibration_notice()
     controls = render_redesign_controls(normalised)
 
-    run_key = (normalised, controls["conserved_text"], controls["candidates"], controls["rounds"])
+    run_key = (
+        normalised, controls["conserved_text"], controls["candidates"], controls["rounds"],
+        controls["hold_gc3"], controls["region_codons"],
+    )
     cached = st.session_state.get("redesign_result")
     cached_key = st.session_state.get("redesign_key")
 
@@ -545,6 +575,8 @@ def render_redesign(normalised: str, model, res: dict) -> None:
                 conserved_text=controls["conserved_text"],
                 candidates_per_round=controls["candidates"],
                 rounds=controls["rounds"],
+                hold_gc3=controls["hold_gc3"],
+                region_codons=controls["region_codons"],
                 progress=report,
             )
         except ValueError as err:

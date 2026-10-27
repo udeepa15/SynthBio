@@ -31,6 +31,16 @@ immediately; the expected tier moves continuously and gives the search a
 gradient. The reported before-and-after tiers are still the most likely tier,
 which is what the predictor shows.
 
+Two optional constraints narrow the search. `hold_gc3` forbids any swap that
+turns a G or C at the wobble position into an A or T, so GC3 can only stay put
+or rise. It exists because the model ranks synonymous variants of one gene
+backwards on the Welch polymerase series while GC3 ranks them correctly, so the
+unconstrained search can buy a model gain by lowering GC3. `region_codons`
+limits changes to the first N codons, the part of the gene where the evidence
+for a synonymous effect (the 5' fold, rare codons at initiation) is best. With
+`hold_gc3` on, GC3 agreeing with the model is built in rather than found, and
+the corroboration check says so instead of reporting it as independent.
+
 The model this scores against currently performs at the majority-class
 baseline, so a gain in predicted tier is not evidence of a gain in measured
 yield. The caller is expected to surface that, and the interface does.
@@ -205,20 +215,44 @@ def parse_conserved_regions(text: str, n_codons: int) -> ConservedRegionSpec:
     return spec
 
 
-def mutable_positions(codons: Sequence[str], conserved: Set[int]) -> List[int]:
+def _allowed_alternatives(codon: str, hold_gc3: bool = False) -> List[str]:
+    """
+    Synonymous replacements for a codon, other than itself.
+
+    With `hold_gc3`, a codon ending in G or C may not become one ending in A or
+    T. Every other swap is allowed: A or T to G or C raises GC3, and A or T to
+    A or T and G or C to G or C leave it unchanged. A walk made only of allowed
+    swaps therefore never lowers GC3.
+    """
+    alternatives = [c for c in SYNONYMS.get(codon, []) if c != codon]
+    if hold_gc3 and codon[2] in "GC":
+        alternatives = [c for c in alternatives if c[2] in "GC"]
+    return alternatives
+
+
+def mutable_positions(
+    codons: Sequence[str],
+    conserved: Set[int],
+    hold_gc3: bool = False,
+    region_codons: int = 0,
+) -> List[int]:
     """
     Codon indices the search may change.
 
     Excluded: the start codon, any terminal stop codon, the conserved region,
     codons with no synonymous alternative (methionine and tryptophan) and
     codons the table does not recognise, which includes anything carrying an
-    ambiguity code.
+    ambiguity code. With `hold_gc3`, codons whose only alternatives would lower
+    GC3 are excluded too. With `region_codons` above zero, so is every codon
+    from that index onward, which limits the redesign to the start of the gene.
     """
     positions = []
     last = len(codons) - 1
     for index, codon in enumerate(codons):
         if index == 0:
             continue
+        if region_codons > 0 and index >= region_codons:
+            break
         if index == last and codon in STOP_CODONS:
             continue
         if index in conserved:
@@ -229,13 +263,15 @@ def mutable_positions(codons: Sequence[str], conserved: Set[int]) -> List[int]:
             continue
         if len(SYNONYMS.get(codon, [])) < 2:
             continue
+        if not _allowed_alternatives(codon, hold_gc3):
+            continue
         positions.append(index)
     return positions
 
 
-def _swap_codon(codon: str, rng: random.Random) -> str:
+def _swap_codon(codon: str, rng: random.Random, hold_gc3: bool = False) -> str:
     """One synonymous replacement, sampled by E. coli usage, never the same codon."""
-    alternatives = [c for c in SYNONYMS.get(codon, []) if c != codon]
+    alternatives = _allowed_alternatives(codon, hold_gc3)
     if not alternatives:
         return codon
     weights = [SAMPLING_WEIGHT.get(c, 0.01) for c in alternatives]
@@ -247,6 +283,7 @@ def mutate(
     positions: Sequence[int],
     n_swaps: int,
     rng: random.Random,
+    hold_gc3: bool = False,
 ) -> List[str]:
     """Copy the codon list with `n_swaps` randomly chosen positions swapped."""
     out = list(codons)
@@ -254,7 +291,7 @@ def mutate(
         return out
     chosen = rng.sample(list(positions), k=min(n_swaps, len(positions)))
     for index in chosen:
-        out[index] = _swap_codon(out[index], rng)
+        out[index] = _swap_codon(out[index], rng, hold_gc3)
     return out
 
 
@@ -264,6 +301,8 @@ def generate_variants(
     conserved_text: str = "",
     n_swaps: Optional[int] = None,
     seed: Optional[int] = None,
+    hold_gc3: bool = False,
+    region_codons: int = 0,
 ) -> List[str]:
     """
     A library of synonymous variants of one construct, for inspection or testing.
@@ -274,10 +313,10 @@ def generate_variants(
     """
     codons = split_codons(sequence)
     spec = parse_conserved_regions(conserved_text, len(codons))
-    positions = mutable_positions(codons, spec.locked)
+    positions = mutable_positions(codons, spec.locked, hold_gc3, region_codons)
     rng = random.Random(seed)
     swaps = n_swaps if n_swaps is not None else max(MIN_SWAPS, int(len(positions) * INITIAL_SWAP_FRACTION))
-    return ["".join(mutate(codons, positions, swaps, rng)) for _ in range(n_variants)]
+    return ["".join(mutate(codons, positions, swaps, rng, hold_gc3)) for _ in range(n_variants)]
 
 
 @dataclass
@@ -372,6 +411,8 @@ class RedesignResult:
     tag_recommendations: List[TagRecommendation]
     improved: bool
     protein: str
+    hold_gc3: bool = False
+    region_codons: int = 0
 
     def corroboration(self) -> "Corroboration":
         """Whether an independent sequence measure agrees with the model's gain."""
@@ -438,6 +479,7 @@ WELCH_CALIBRATION = [
 CORROBORATED = "corroborated"
 CONTRADICTED = "contradicted"
 INCONCLUSIVE = "inconclusive"
+CONSTRAINED = "constrained"
 
 
 @dataclass
@@ -459,6 +501,7 @@ class Corroboration:
     head_folding_change: Optional[float]
     cai_change: Optional[float]
     summary: str
+    constrained: bool = False
 
 
 def corroborate(result: "RedesignResult") -> Corroboration:
@@ -483,6 +526,16 @@ def corroborate(result: "RedesignResult") -> Corroboration:
         return Corroboration(
             INCONCLUSIVE, gc3, head, cai,
             "GC3 could not be computed for one of the two sequences, so the check did not run.",
+        )
+    if getattr(result, "hold_gc3", False):
+        return Corroboration(
+            CONSTRAINED, gc3, head, cai,
+            f"The search was not allowed to lower GC3, which changed by {gc3:+.2f} points, so GC3 "
+            "agreeing with the model is built into the search and is not independent evidence. The "
+            "constraint stops the model's known weakness on synonymous variants being acted on. It "
+            "does not make the model's gain trustworthy, because the model still performs at the "
+            "majority class baseline.",
+            constrained=True,
         )
     if gc3 > 0:
         return Corroboration(
@@ -551,6 +604,8 @@ def optimize_sequence(
     patience: int = DEFAULT_PATIENCE,
     seed: Optional[int] = 42,
     progress: Optional[Any] = None,
+    hold_gc3: bool = False,
+    region_codons: int = 0,
 ) -> RedesignResult:
     """
     Search for a synonymous redesign of `sequence` that the model scores higher.
@@ -562,6 +617,9 @@ def optimize_sequence(
     `progress` is an optional callable taking (round_index, rounds, best score),
     which the interface uses to drive a progress bar.
 
+    `hold_gc3` forbids swaps that lower GC3, and `region_codons` above zero
+    limits changes to the first that many codons (see the module docstring).
+
     Raises ValueError for a sequence that cannot be redesigned, and
     RuntimeError if a candidate ever translates differently from the original,
     which would be a defect in the mutation operator.
@@ -572,12 +630,16 @@ def optimize_sequence(
 
     protein = translate_codons(codons)
     spec = parse_conserved_regions(conserved_text, len(codons))
-    positions = mutable_positions(codons, spec.locked)
+    if region_codons < 0:
+        raise ValueError("The start region must be zero (whole gene) or a positive number of codons.")
+    positions = mutable_positions(codons, spec.locked, hold_gc3, region_codons)
 
     if not positions:
         raise ValueError(
             "No codon in this construct can be changed synonymously. Every position is either "
-            "locked, a single-codon amino acid, or outside the standard codon table."
+            "locked, a single-codon amino acid, outside the standard codon table"
+            + (", outside the start region" if region_codons else "")
+            + (", or cannot change without lowering GC3." if hold_gc3 else ".")
         )
 
     if model is None or not hasattr(model, "predict_proba"):
@@ -587,7 +649,8 @@ def optimize_sequence(
 
     logger.info(
         f"Redesign starting: {len(codons)} codons, {len(positions)} mutable, "
-        f"{len(spec.locked)} conserved, budget {rounds} rounds x {candidates_per_round} candidates."
+        f"{len(spec.locked)} conserved, budget {rounds} rounds x {candidates_per_round} candidates, "
+        f"hold_gc3={hold_gc3}, region_codons={region_codons}."
     )
 
     rng = random.Random(seed)
@@ -600,7 +663,10 @@ def optimize_sequence(
 
     for round_index in range(rounds):
         best_codons = split_codons(best.sequence)
-        batch = ["".join(mutate(best_codons, positions, n_swaps, rng)) for _ in range(candidates_per_round)]
+        batch = [
+            "".join(mutate(best_codons, positions, n_swaps, rng, hold_gc3))
+            for _ in range(candidates_per_round)
+        ]
         scored = _score_batch(batch, model)
         candidates_scored += len(scored)
 
@@ -651,6 +717,8 @@ def optimize_sequence(
         tag_recommendations=recommend_fusion_tags(original.features),
         improved=best.expected_tier > original.expected_tier,
         protein=protein,
+        hold_gc3=hold_gc3,
+        region_codons=region_codons,
     )
     logger.info(
         f"Redesign finished: {candidates_scored} candidates scored, {changed} codons changed, "
