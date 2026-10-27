@@ -781,17 +781,6 @@ def render_diagnosis(res: dict, prov, model) -> None:
         feat_df = build_feature_row(res["features"])
     render_shap_waterfall(model, feat_df, predicted_class=res.get("predicted_score"))
 
-    with st.expander("Feature contribution for this construct", expanded=False):
-        st.caption(
-            "Per-construct contributions, not global importances. With a trained model these are the "
-            "SHAP values for this sequence; in heuristic mode they are weights derived from the feature "
-            "values themselves and carry no model information."
-        )
-        fi_df = pd.DataFrame(
-            list(res["feature_importances"].items()),
-            columns=["Feature", "Contribution"],
-        ).sort_values("Contribution", ascending=True)
-        st.bar_chart(fi_df.set_index("Feature"))
 
 
 if __name__ == "__main__":
