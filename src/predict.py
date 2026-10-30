@@ -6,6 +6,7 @@ computes construct failure risk score (0-100%), and calculates feature importanc
 
 import logging
 from typing import Any, Dict, Optional, Tuple
+
 import pandas as pd
 import numpy as np
 from src.features import extract_features
@@ -25,6 +26,10 @@ FEATURE_NAMES = ["gc_content", "codon_adaptation_index", "mrna_folding_stability
 # Which of the two paths produced the tier on screen.
 MODEL_SOURCE = "trained_model"
 HEURISTIC_SOURCE = "heuristic_rules"
+
+# Which predictor arrangement ran. See `predict_construct`.
+MODE_SINGLE_MODEL = "single_model"
+MODE_AGENTS = "agents"
 
 # Feature columns this module can compute from a pasted sequence, and therefore
 # the only columns a model may be fitted on if the application is to serve it.
@@ -167,9 +172,26 @@ def predict_construct(
     sequence: str,
     model: Any = None,
     explainer: Any = None,
-    feature_ranges: Optional[Dict[str, Dict[str, float]]] = None
+    feature_ranges: Optional[Dict[str, Dict[str, float]]] = None,
+    mode: str = MODE_SINGLE_MODEL,
+    comparison: Optional[Tuple[str, ...]] = None,
+    leader_5prime: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run full inference pipeline for a given gene construct sequence."""
+    """
+    Run full inference pipeline for a given gene construct sequence.
+
+    `mode` selects which path produces the figures. `MODE_SINGLE_MODEL` is the
+    behaviour this function has always had and stays the default.
+    `MODE_AGENTS` additionally runs the four agents and the critic and returns
+    the verdict under the `critic_verdict` key, without changing any existing
+    key, so the interface can adopt the agent path one panel at a time.
+
+    The switch is deliberately one way and is not yet flipped. The plan is to
+    flip it once at least one agent has passed its gate, because two live code
+    paths drift, and this project has already been bitten twice by a label
+    inversion that only appeared under testing. No agent has passed a gate, so
+    the default remains the single model.
+    """
     logger.info(f"Starting construct prediction pipeline for input sequence ({len(sequence)} bp)...")
     
     if not sequence or not sequence.strip():
@@ -290,6 +312,24 @@ def predict_construct(
         "prediction_source": prediction_source,
         "unservable_features": unservable_features,
         "feat_df": feat_df,
+        "mode": mode,
+        "critic_verdict": None,
     }
+
+    if mode == MODE_AGENTS:
+        # Imported here rather than at module scope: the agents import this
+        # module for `build_feature_row` and `check_feature_ranges`, so a top
+        # level import would be circular.
+        from src.agents.graph import assess
+
+        result_summary["critic_verdict"] = assess(
+            sequence,
+            model=model,
+            explainer=explainer,
+            feature_ranges=feature_ranges,
+            comparison=comparison or (),
+            leader_5prime=leader_5prime,
+        )
+
     logger.info("Construct prediction pipeline completed successfully.")
     return result_summary

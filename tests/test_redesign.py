@@ -327,3 +327,91 @@ def test_region_limit_applies_to_generated_variants_too():
 def test_negative_region_is_refused():
     with pytest.raises(ValueError):
         optimize_sequence(SEQUENCE, model=_FakeModel(), region_codons=-1)
+
+
+# --- M3: which agent the search ranks on ------------------------------------
+#
+# The tier model separates one gene from another and ranks the Welch polymerase
+# series backwards, so it is the wrong objective for a within gene search.
+# Agent C is the right one, and these tests fix the switch between them:
+# the agent is used when it holds a gated artifact, and the search falls back to
+# the tier model, with the GC3 corroboration check as its guard, when it does
+# not.
+
+
+class _FakeRanker:
+    """A stand-in Agent C that prefers low GC3, the opposite of _FakeModel."""
+
+    class _Ranking:
+        def __init__(self, scores):
+            self.scores = tuple(scores)
+            self.order = tuple(sorted(range(len(scores)), key=lambda i: -scores[i]))
+
+    name = "variant"
+    require_gate = True
+    ranker = object()
+
+    def __init__(self, passed=True):
+        self._passed = passed
+        self.calls = 0
+
+    def gate(self):
+        from src.agents.base import GATE_FAILED, GATE_PASSED, GateResult
+
+        return GateResult(
+            status=GATE_PASSED if self._passed else GATE_FAILED,
+            summary="Gate C stub.",
+        )
+
+    def rank(self, sequences, feature_dicts=None):
+        from src.features import calculate_gc3
+
+        self.calls += 1
+        return self._Ranking([-calculate_gc3(seq) for seq in sequences])
+
+
+def test_the_search_ranks_on_agent_c_when_it_holds_a_passed_gate():
+    agent = _FakeRanker(passed=True)
+    result = optimize_sequence(
+        SEQUENCE, model=_FakeModel(), rounds=4, candidates_per_round=10, seed=3,
+        variant_agent=agent,
+    )
+    assert result.objective == "variant"
+    assert result.ranked_on_variant_agent is True
+    assert agent.calls > 1, "the agent must score every batch, not only the original"
+    # The stub agent prefers low GC3 while the stub tier model prefers high, so
+    # a search that followed the tier model would move GC3 the other way.
+    assert result.best.features["gc3_content"] <= result.original.features["gc3_content"]
+    assert result.objective_gain >= 0.0
+
+
+def test_an_ungated_agent_c_leaves_the_search_on_the_tier_model():
+    agent = _FakeRanker(passed=False)
+    result = optimize_sequence(
+        SEQUENCE, model=_FakeModel(), rounds=4, candidates_per_round=10, seed=3,
+        variant_agent=agent,
+    )
+    assert result.objective == "expression"
+    assert agent.calls == 0, "an agent that has not passed its gate must not score anything"
+    assert result.best.expected_tier >= result.original.expected_tier
+
+
+def test_no_agent_at_all_is_todays_behaviour():
+    with_none = optimize_sequence(
+        SEQUENCE, model=_FakeModel(), rounds=4, candidates_per_round=10, seed=11, variant_agent=None,
+    )
+    without = optimize_sequence(
+        SEQUENCE, model=_FakeModel(), rounds=4, candidates_per_round=10, seed=11,
+    )
+    assert with_none.best.sequence == without.best.sequence
+    assert with_none.objective == "expression"
+
+
+def test_corroboration_says_gc3_is_not_independent_of_agent_c():
+    result = optimize_sequence(
+        SEQUENCE, model=_FakeModel(), rounds=3, candidates_per_round=8, seed=2,
+        variant_agent=_FakeRanker(passed=True),
+    )
+    summary = result.corroboration().summary
+    if result.improved and result.corroboration().gc3_change:
+        assert "its own inputs" in summary

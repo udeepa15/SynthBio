@@ -1,0 +1,106 @@
+{
+  "created_at": "2026-10-30",
+  "model_class": "XGBRanker",
+  "model_params": {
+    "objective": "rank:pairwise",
+    "n_estimators": 400,
+    "max_depth": 4,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_lambda": 10,
+    "random_state": 42,
+    "tree_method": "hist"
+  },
+  "agent": "variant",
+  "question": "Of two synonymous versions of the same gene, which expresses better?",
+  "features": [
+    "gc_content",
+    "gc3_content",
+    "codon_adaptation_index",
+    "rare_codon_fraction",
+    "rare_codons_head30",
+    "head_folding_48",
+    "genewide_folding_avg"
+  ],
+  "excluded_features": {
+    "gravy_score": "constant under synonymous substitution",
+    "pI": "constant under synonymous substitution",
+    "length_codons": "constant under synonymous substitution",
+    "folding_energy": "GC derived proxy, strictly monotonic in 5' GC"
+  },
+  "training_data": {
+    "dataset": "Cambray G, Guimaraes JC, Arkin AP. Evaluation of 244,000 synthetic sequences reveals design principles to optimize translation in Escherichia coli. Nat Biotechnol 36:1005-1015 (2018).",
+    "sources": {
+      "cambray2018": 74900
+    },
+    "n_rows": 74900,
+    "n_groups": 4126,
+    "held_out": "Welch 2009 in full; see reports/gates.md",
+    "sequence_length_nt": {
+      "min": 96,
+      "median": 96,
+      "max": 96
+    }
+  },
+  "feature_ranges": {
+    "gc_content": {
+      "min": 31.25,
+      "max": 69.79
+    },
+    "gc3_content": {
+      "min": 0.0,
+      "max": 93.75
+    },
+    "codon_adaptation_index": {
+      "min": 0.221,
+      "max": 0.815
+    },
+    "rare_codon_fraction": {
+      "min": 0.0,
+      "max": 0.3438
+    },
+    "rare_codons_head30": {
+      "min": 0.0,
+      "max": 0.3333
+    },
+    "head_folding_48": {
+      "min": -24.7,
+      "max": 0.0
+    },
+    "genewide_folding_avg": {
+      "min": -18.07,
+      "max": -1.07
+    }
+  },
+  "gate": {
+    "name": "Gate C",
+    "status": "failed",
+    "summary": "Gate C failed. polymerase: rho +0.156 does not beat GC3 alone at +0.643; scFv: rho +0.212 does not beat GC3 alone at +0.394.",
+    "measured_on": "2026-10-30",
+    "report_path": "reports/gates.md",
+    "baselines_beaten": []
+  },
+  "welch": {
+    "candidate": {
+      "overall_rho": -0.2891138475485382,
+      "polymerase_rho": 0.15595105672969967,
+      "scfv_rho": 0.21151026392961875
+    },
+    "gc3": {
+      "overall_rho": 0.4516567959379657,
+      "polymerase_rho": 0.6433737979472838,
+      "scfv_rho": 0.39379528694370786
+    },
+    "gc_percent": {
+      "overall_rho": 0.718805116448867,
+      "polymerase_rho": 0.5307805240606905,
+      "scfv_rho": 0.3799653342618999
+    }
+  },
+  "heldout_groups": {
+    "model_mean_tau": 0.11839261167845049,
+    "gc3_mean_tau": -0.0758527334367323,
+    "n_groups": 825
+  }
+}

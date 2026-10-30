@@ -23,13 +23,23 @@ amino acid sequence, so no synonymous change can move them. When the construct
 fails on either, the engine says so and recommends a fusion tag instead of
 presenting a codon redesign as a remedy.
 
-On what the score means: the objective is the model's expected tier, the
-probability-weighted mean over the six tiers, rather than the single most
+On what the score means: by default the objective is the model's expected tier,
+the probability-weighted mean over the six tiers, rather than the single most
 likely tier. With six classes the most likely tier is a step function, so most
 single-codon swaps leave it unchanged and a hill climb on it stalls
 immediately; the expected tier moves continuously and gives the search a
 gradient. The reported before-and-after tiers are still the most likely tier,
 which is what the predictor shows.
+
+That objective is the wrong one, and the fix is Agent C. The tier model
+separates one gene from another and was never shown an example of the within
+gene question this search asks, which is why it ranks the Welch polymerase
+series backwards. Agent C, in `src/agents/variant.py`, is a ranker trained
+inside query groups on exactly that question. Pass one to `optimize_sequence`
+and the search ranks on it instead, which is milestone M3 of the multi agent
+plan. The agent abstains unless it holds an artifact that passed Gate C, and
+the search then falls back to the tier model with the corroboration check
+below, which is today's behaviour and is what the measurements support.
 
 Two optional constraints narrow the search. `hold_gc3` forbids any swap that
 turns a G or C at the wobble position into an A or T, so GC3 can only stay put
@@ -384,6 +394,17 @@ def _is_missing(value: Any) -> bool:
         return False
 
 
+# Which agent's score the search is climbing. The tier model is the fallback
+# and not the preference: see the module docstring.
+OBJECTIVE_EXPRESSION = "expression"
+OBJECTIVE_VARIANT = "variant"
+
+OBJECTIVE_LABELS = {
+    OBJECTIVE_EXPRESSION: "the tier model's expected tier",
+    OBJECTIVE_VARIANT: "Agent C's within gene variant rank",
+}
+
+
 @dataclass
 class ScoredSequence:
     """One candidate: its sequence, its features and what the model made of it."""
@@ -395,6 +416,11 @@ class ScoredSequence:
     tier_label: str
     confidence: float
     probabilities: Dict[int, float]
+    # The quantity the search actually climbs. Equal to `expected_tier` unless
+    # Agent C applies, in which case it is the agent's rank score, which has no
+    # units and is only comparable between candidates for the same protein.
+    objective_score: float = 0.0
+    objective: str = OBJECTIVE_EXPRESSION
 
 
 @dataclass
@@ -413,6 +439,7 @@ class RedesignResult:
     protein: str
     hold_gc3: bool = False
     region_codons: int = 0
+    objective: str = OBJECTIVE_EXPRESSION
 
     def corroboration(self) -> "Corroboration":
         """Whether an independent sequence measure agrees with the model's gain."""
@@ -421,6 +448,19 @@ class RedesignResult:
     @property
     def expected_tier_gain(self) -> float:
         return round(self.best.expected_tier - self.original.expected_tier, 3)
+
+    @property
+    def objective_gain(self) -> float:
+        """Gain on whatever the search actually climbed."""
+        return round(self.best.objective_score - self.original.objective_score, 3)
+
+    @property
+    def objective_label(self) -> str:
+        return OBJECTIVE_LABELS.get(self.objective, self.objective)
+
+    @property
+    def ranked_on_variant_agent(self) -> bool:
+        return self.objective == OBJECTIVE_VARIANT
 
     def feature_comparison(self) -> pd.DataFrame:
         """Original against redesigned, for the features a codon swap can move."""
@@ -517,10 +557,22 @@ def corroborate(result: "RedesignResult") -> Corroboration:
     head = delta("head_folding_48")
     cai = delta("codon_adaptation_index")
 
+    # GC3 is one of Agent C's own input features, so when the search ranks on
+    # Agent C the two are not independent and the check is demoted to a
+    # consistency check. It is still worth running: a ranker that moves against
+    # its own GC3 input is doing something that needs explaining.
+    if getattr(result, "objective", OBJECTIVE_EXPRESSION) == OBJECTIVE_VARIANT:
+        independence = (
+            " GC3 is one of Agent C's input features, so this is a consistency check between the "
+            "agent and one of its own inputs rather than independent evidence."
+        )
+    else:
+        independence = ""
+
     if not result.improved:
         return Corroboration(
             INCONCLUSIVE, gc3, head, cai,
-            "The search did not raise the model's score, so there is nothing to corroborate.",
+            "The search did not raise its objective, so there is nothing to corroborate.",
         )
     if gc3 is None:
         return Corroboration(
@@ -540,16 +592,16 @@ def corroborate(result: "RedesignResult") -> Corroboration:
     if gc3 > 0:
         return Corroboration(
             CORROBORATED, gc3, head, cai,
-            f"GC3 rose by {gc3:+.2f} points alongside the model's score. On the Welch synonymous "
-            "variants GC3 tracks measured yield positively in both series, so an independent "
-            "sequence measure agrees with the model here.",
+            f"GC3 rose by {gc3:+.2f} points alongside the score the search climbed. On the Welch "
+            "synonymous variants GC3 tracks measured yield positively in both series, so a second "
+            "sequence measure agrees with the search here." + independence,
         )
     if gc3 < 0:
         return Corroboration(
             CONTRADICTED, gc3, head, cai,
-            f"GC3 fell by {gc3:.2f} points while the model's score rose. On the Welch synonymous "
-            "variants GC3 tracks measured yield positively in both series, so the two signals "
-            "disagree and this redesign is not supported by the sequence evidence.",
+            f"GC3 fell by {gc3:.2f} points while the score the search climbed rose. On the Welch "
+            "synonymous variants GC3 tracks measured yield positively in both series, so the two "
+            "signals disagree and this redesign is not supported by the sequence evidence." + independence,
         )
     return Corroboration(
         INCONCLUSIVE, gc3, head, cai,
@@ -557,12 +609,21 @@ def corroborate(result: "RedesignResult") -> Corroboration:
     )
 
 
-def _score_batch(sequences: Sequence[str], model: Any) -> List[ScoredSequence]:
+def _score_batch(
+    sequences: Sequence[str],
+    model: Any,
+    variant_agent: Any = None,
+) -> List[ScoredSequence]:
     """
     Score candidates through the predictor's own feature path and the model.
 
     One `predict_proba` call covers the whole batch, so the cost of a round is
     the feature extractions, not the model.
+
+    With `variant_agent` holding a gated artifact, the objective becomes its
+    within gene rank score and the tier model's output is still computed, for
+    display: the interface shows a before and after tier, and the critic's rank
+    disagreement term needs both opinions to compare.
     """
     feature_dicts = [extract_features(seq) for seq in sequences]
     frame = pd.concat([build_feature_row(f) for f in feature_dicts], ignore_index=True)
@@ -578,11 +639,23 @@ def _score_batch(sequences: Sequence[str], model: Any) -> List[ScoredSequence]:
     probabilities = model.predict_proba(frame[model_cols])
     classes = [int(c) for c in getattr(model, "classes_", range(probabilities.shape[1]))]
 
+    rank_scores: Optional[List[float]] = None
+    if variant_agent is not None:
+        try:
+            rank_scores = list(variant_agent.rank(list(sequences), feature_dicts).scores)
+        except Exception as err:
+            # An agent that cannot score is an agent that abstains. Falling back
+            # to the tier model is the documented behaviour, so this is logged
+            # and the search continues rather than failing mid run.
+            logger.error(f"Agent C could not rank this batch, falling back to the tier model: {err}")
+            rank_scores = None
+
     scored = []
-    for seq, feats, row in zip(sequences, feature_dicts, probabilities):
+    for index, (seq, feats, row) in enumerate(zip(sequences, feature_dicts, probabilities)):
         per_class = {c: float(p) for c, p in zip(classes, row)}
         expected = float(sum(c * p for c, p in per_class.items()))
         tier_class = max(per_class, key=per_class.get)
+        using_variant = rank_scores is not None
         scored.append(ScoredSequence(
             sequence=seq,
             features=feats,
@@ -591,8 +664,42 @@ def _score_batch(sequences: Sequence[str], model: Any) -> List[ScoredSequence]:
             tier_label=TIER_MAPPING.get(tier_class, f"Tier {tier_class}"),
             confidence=per_class[tier_class],
             probabilities=per_class,
+            objective_score=float(rank_scores[index]) if using_variant else expected,
+            objective=OBJECTIVE_VARIANT if using_variant else OBJECTIVE_EXPRESSION,
         ))
     return scored
+
+
+def _usable_variant_agent(agent: Any, sequence: str) -> Any:
+    """
+    The variant agent if it can actually rank, otherwise None with the reason logged.
+
+    The agent's own `opine` decides, so the precondition, the missing artifact
+    and the unpassed gate are all answered in one place and by the agent rather
+    than by this module.
+    """
+    if agent is None:
+        return None
+    try:
+        gate = agent.gate()
+        has_artifact = getattr(agent, "ranker", None) is not None
+        gated = gate.passed or not getattr(agent, "require_gate", True)
+    except Exception as err:
+        logger.error(f"Agent C could not be consulted, falling back to the tier model: {err}")
+        return None
+
+    if has_artifact and gated:
+        logger.info("Redesign objective: Agent C's within gene variant rank.")
+        return agent
+
+    reason = (
+        "it holds no ranker artifact" if not has_artifact else "it has not passed Gate C"
+    )
+    logger.info(
+        f"Redesign objective: the tier model's expected tier, because Agent C abstains, {reason}. "
+        f"{gate.summary}"
+    )
+    return None
 
 
 def optimize_sequence(
@@ -606,6 +713,7 @@ def optimize_sequence(
     progress: Optional[Any] = None,
     hold_gc3: bool = False,
     region_codons: int = 0,
+    variant_agent: Any = None,
 ) -> RedesignResult:
     """
     Search for a synonymous redesign of `sequence` that the model scores higher.
@@ -653,10 +761,12 @@ def optimize_sequence(
         f"hold_gc3={hold_gc3}, region_codons={region_codons}."
     )
 
+    ranker = _usable_variant_agent(variant_agent, sequence)
+
     rng = random.Random(seed)
-    original = _score_batch([sequence], model)[0]
+    original = _score_batch([sequence], model, ranker)[0]
     best = original
-    history = [original.expected_tier]
+    history = [original.objective_score]
     candidates_scored = 1
     n_swaps = max(MIN_SWAPS, int(len(positions) * INITIAL_SWAP_FRACTION))
     stalled = 0
@@ -667,7 +777,7 @@ def optimize_sequence(
             "".join(mutate(best_codons, positions, n_swaps, rng, hold_gc3))
             for _ in range(candidates_per_round)
         ]
-        scored = _score_batch(batch, model)
+        scored = _score_batch(batch, model, ranker)
         candidates_scored += len(scored)
 
         for candidate in scored:
@@ -679,11 +789,11 @@ def optimize_sequence(
                     "A candidate did not encode the original protein. The redesign was abandoned."
                 )
 
-        round_best = max(scored, key=lambda s: s.expected_tier)
-        if round_best.expected_tier > best.expected_tier:
+        round_best = max(scored, key=lambda s: s.objective_score)
+        if round_best.objective_score > best.objective_score:
             logger.info(
-                f"Round {round_index + 1}: expected tier {best.expected_tier:.3f} -> "
-                f"{round_best.expected_tier:.3f} with {n_swaps} swaps per candidate."
+                f"Round {round_index + 1}: objective {best.objective_score:.3f} -> "
+                f"{round_best.objective_score:.3f} with {n_swaps} swaps per candidate."
             )
             best = round_best
             stalled = 0
@@ -693,13 +803,13 @@ def optimize_sequence(
             # landscape, so halve it and try a finer search.
             n_swaps = max(MIN_SWAPS, n_swaps // 2)
             logger.info(
-                f"Round {round_index + 1}: no improvement on {best.expected_tier:.3f}; "
+                f"Round {round_index + 1}: no improvement on {best.objective_score:.3f}; "
                 f"step reduced to {n_swaps} swaps."
             )
 
-        history.append(best.expected_tier)
+        history.append(best.objective_score)
         if progress is not None:
-            progress(round_index + 1, rounds, best.expected_tier)
+            progress(round_index + 1, rounds, best.objective_score)
 
         if stalled >= patience and n_swaps <= MIN_SWAPS:
             logger.info(f"Redesign stopping early after {stalled} rounds without improvement.")
@@ -715,14 +825,15 @@ def optimize_sequence(
         codons_mutable=len(positions),
         conserved=spec,
         tag_recommendations=recommend_fusion_tags(original.features),
-        improved=best.expected_tier > original.expected_tier,
+        improved=best.objective_score > original.objective_score,
         protein=protein,
         hold_gc3=hold_gc3,
         region_codons=region_codons,
+        objective=original.objective,
     )
     logger.info(
         f"Redesign finished: {candidates_scored} candidates scored, {changed} codons changed, "
-        f"expected tier {original.expected_tier:.3f} -> {best.expected_tier:.3f} "
-        f"(tier {original.tier_class} -> {best.tier_class})."
+        f"objective {original.objective_score:.3f} -> {best.objective_score:.3f} on "
+        f"{OBJECTIVE_LABELS[original.objective]} (tier {original.tier_class} -> {best.tier_class})."
     )
     return result

@@ -84,6 +84,34 @@ def load_trained_artifacts():
     return None, None, None
 
 
+@st.cache_resource
+def load_variant_agent():
+    """
+    Agent C, the within gene codon variant ranker, loaded once per process.
+
+    The agent loads its own artifact and abstains when there is none or when
+    the artifact's recorded gate result is not a pass, which is the current
+    state: there is no within gene training data in the repository, so Gate C
+    has not been run. While it abstains the redesign search keeps ranking on
+    the tier model with the GC3 corroboration check as its guard.
+
+    Loading it is cheap and failing to load it must not take the application
+    down, so any error here is logged and the agent is dropped.
+    """
+    try:
+        from src.agents.variant import VariantAgent
+
+        agent = VariantAgent()
+        logger.info(
+            "Agent C loaded. Artifact present: "
+            f"{agent.ranker is not None}. Gate: {agent.gate().status}."
+        )
+        return agent
+    except Exception as err:
+        logger.error(f"Agent C could not be loaded: {err}", exc_info=False)
+        return None
+
+
 def render_figure(container, value: str, label: str, note: str = "") -> None:
     """
     One figure with its full label.
@@ -454,10 +482,23 @@ def render_redesign_verdict(result) -> None:
     cols = st.columns(4)
     render_figure(cols[0], str(original.tier_class), "Original tier", original.tier_label)
     render_figure(cols[1], str(best.tier_class), "Redesigned tier", best.tier_label)
+    objective_note = (
+        f"Objective {original.objective_score:.3f} to {best.objective_score:.3f}, on "
+        f"{result.objective_label}."
+    )
+    if result.ranked_on_variant_agent:
+        objective_note += (
+            " Agent C ranks synonymous variants of one gene against each other, which is the "
+            "question this search asks. Its score has no units and orders candidates only."
+        )
+    else:
+        objective_note += (
+            " That is the probability weighted mean over the six tiers. It comes from the model "
+            "that separates one gene from another, which is not the question this search asks, so "
+            "read the corroboration check below before acting on a gain."
+        )
     render_figure(
-        cols[2], f"{result.expected_tier_gain:+.3f}", "Change in the objective",
-        f"Expected tier {original.expected_tier:.3f} to {best.expected_tier:.3f}. The objective is "
-        "the probability weighted mean over the six tiers, which is what the search climbs.",
+        cols[2], f"{result.objective_gain:+.3f}", "Change in the objective", objective_note,
     )
     render_figure(
         cols[3], f"{result.codons_changed}", "Codons changed",
@@ -578,6 +619,7 @@ def render_redesign(normalised: str, model, res: dict) -> None:
                 hold_gc3=controls["hold_gc3"],
                 region_codons=controls["region_codons"],
                 progress=report,
+                variant_agent=load_variant_agent(),
             )
         except ValueError as err:
             bar.empty()

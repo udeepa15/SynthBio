@@ -27,6 +27,11 @@ models/*
 # Deployed model artifact, needed by app/main.py at runtime
 !models/baseline_model.joblib
 !models/baseline_model_metadata.json
+# Agent C's ranker and the gate result that decides whether it is allowed to
+# speak. Committed together: an artifact without its gate is exactly what this
+# project is trying not to ship.
+!models/agent_c_variant_ranker.joblib
+!models/agent_c_variant_ranker_metadata.json
 
 # Environment & IDE
 .env
@@ -39,3 +44,9 @@ models/*
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Downloaded datasets and the extracts built from them. All regenerable with
+# scripts/fetch_datasets.py, which is the record of where they came from.
+data/external/cambray2018/
+data/external/boel2016/
+data/external/agent_c_features.csv

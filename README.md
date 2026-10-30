@@ -113,6 +113,64 @@ python scripts/redesign_sanity_check.py
 
 ---
 
+## 🤖 Multi agent predictor and the gates
+
+The single model is being replaced by four narrow agents and a critic, following
+`docs/synthbio-multi-agent-plan.pdf`. Each agent answers one question, carries the result
+of its own named gate, and abstains when it has not passed it. An abstention is an
+answer here, not a failure.
+
+| Agent | Question | Status |
+| :--- | :--- | :--- |
+| A, expression | Will this protein express, and in which tier | Wraps the served artifact. Gate blocked: the clustered split needs the training sequences, which are not in the tree |
+| B, solubility | Will it be soluble rather than inclusion bodies | Declared, not built. No solubility dataset on disk |
+| C, codon variant | Of two synonymous versions of one gene, which expresses better | Built and wired in, abstaining. No within gene training data on disk, so Gate C has not been run |
+| D, structure | Does the 5' region fold so as to block initiation | Declared, not built. Blocked by a missing input, the vector's 5' leader, rather than by a missing dataset |
+
+`reports/gates.md` is the single source of truth for every numeric claim in this project.
+Regenerate it, along with every baseline and every gate that can be run:
+
+```bash
+python scripts/gates.py
+```
+
+### The external datasets
+
+Both downloads come from the authors' own deposits, are reduced on the way in to the
+columns this project uses, and are gitignored because they are regenerable.
+
+```bash
+python scripts/fetch_datasets.py --source cambray
+```
+
+```bash
+python scripts/fetch_datasets.py --source boel
+```
+
+Cambray 2018 is Agent C's training data: 244,000 designed sequences, of which 74,900 in
+4,126 groups hold the protein exactly constant and vary only the codons. Boel 2016 rebuilds
+`data/processed/feature_table_v3.csv`, the sequence bearing table the deployed model was
+built from, which is what identity clustering and the reserved critic pool need:
+
+```bash
+python scripts/cluster.py
+```
+
+Agent C is the agent the plan puts first, because the within gene question is the one the
+tier model demonstrably gets wrong. Train and gate it once a source is on disk; it writes
+the gate result beside the artifact, and the agent reads that sidecar and stays quiet
+unless it records a pass:
+
+```bash
+python scripts/train_agent_c.py
+```
+
+While Agent C abstains, the redesign search keeps ranking on the tier model with the GC3
+corroboration check as its guard. Hand it a gated agent and it ranks on that instead,
+which is the fix for the backwards ranking described above.
+
+---
+
 ## 🧪 Running Tests
 
 Execute unit tests to verify feature calculations and model outputs:
