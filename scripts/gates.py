@@ -98,6 +98,21 @@ def majority_line(served: gating.PredictorResult, majority: gating.PredictorResu
     )
 
 
+def _critic_metadata() -> Optional[Dict[str, object]]:
+    """The trained critic's sidecar, or None when no critic has been trained."""
+    import json
+
+    path = "models/critic_metadata.json"
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as err:
+        logger.warning(f"Could not read '{path}': {err}")
+        return None
+
+
 def _model_params() -> Optional[Dict[str, object]]:
     import json
 
@@ -262,12 +277,25 @@ def _agent_c_narrative(
     candidate = outcome.candidate
     lines = []
 
+    sources = training.get("sources") or {}
+    source_text = ", ".join(f"{name} {count:,}" for name, count in sorted(sources.items()))
     lines.append(
         f"The artifact under test is `{agent.model_path}`, a "
         f"{metadata.get('model_class', 'ranker')} over {len(metadata.get('features', []))} features "
         f"a synonymous substitution can move, fitted on {training.get('n_rows', 0):,} sequences in "
-        f"{training.get('n_groups', 0):,} query groups."
+        f"{training.get('n_groups', 0):,} query groups"
+        + (f" from {len(sources)} sources: {source_text}." if sources else ".")
     )
+
+    if len(sources) > 1:
+        lines.append(
+            "Two independent sources is the point of the secondary gate, because it separates two "
+            "explanations of a failure. If the ranker worked on one library and not the other, the "
+            "result would be about that library's scaffold. It does not: both are short designed "
+            "regions fused to a reporter, both train a model that orders their own held out groups "
+            "well, and neither carries to whole genes. That points at the fragment, not the "
+            "scaffold."
+        )
 
     lengths = training.get("sequence_length_nt") or {}
     if lengths:
@@ -354,6 +382,7 @@ def build_report(
     sources: Dict[str, Optional[str]],
     agent: VariantAgent,
     structure_agent: StructureAgent,
+    grouping: clustering.Grouping,
 ) -> str:
     lines: List[str] = []
     add = lines.append
@@ -388,7 +417,20 @@ def build_report(
             add(
                 f"Clustered by `{assignment.method}`: {len(assignment.clusters):,} sequences in "
                 f"{assignment.n_clusters:,} clusters, with {len(assignment.critic_pool):,} clusters "
-                f"reserved as the critic pool and recorded in `{clustering.CLUSTER_REPORT}`."
+                f"reserved as the critic pool and recorded in `{clustering.CLUSTER_REPORT}`. The "
+                f"pool covers {len(assignment.critic_ids()):,} sequences, and no gate below is "
+                "measured on them: they are held back from training, from tuning and from gate "
+                "reporting, so that a critic trained on the specialists' predictions can later be "
+                "evaluated on rows no specialist has seen."
+            )
+            add("")
+            add(
+                "Organism grouping, which the served artifact was built with, is kept as a second "
+                "reported split rather than as a substitute. It was a real improvement and it is "
+                f"not sufficient: these {assignment.n_clusters:,} clusters sit across "
+                f"{len(set(clustering.organism_groups(list(assignment.clusters)))):,} organism "
+                "groups, so paralogues inside one organism and homologues across two were being "
+                "split apart before."
             )
     else:
         add(f"**Blocked.** {status}")
@@ -414,23 +456,25 @@ def build_report(
     add("## Gate A. Expression tier")
     add("")
     add(
-        "**Status: blocked.** The gate requires identity clustered 5 fold cross validation, beating "
-        "the majority class, length alone, GC per cent alone and the GRAVY rule on macro F1 and on "
-        "Spearman rho between predicted and true tier, with the gap larger than the fold to fold "
-        "standard deviation, and additionally not being negatively correlated with measured yield "
-        "on either Welch series. The clustered split cannot be computed here, so what follows is "
-        "the organism grouped comparison, which is the same comparison on a weaker split."
+        "The gate requires identity clustered 5 fold cross validation, beating the majority class, "
+        "length alone, GC per cent alone and the GRAVY rule on macro F1 and on Spearman rho "
+        "between predicted and true tier, with the gap larger than the fold to fold standard "
+        "deviation, and additionally not being negatively correlated with measured yield on either "
+        "Welch series."
     )
     add("")
+    # Whether the served configuration cleared every baseline, filled in by the
+    # cross validation below and read by the verdict further down. False until
+    # measured, so a skipped run cannot report a pass.
+    cleared = {"macro_f1": False, "spearman_rho": False}
+
     if cv_results is None:
         add("Cross validation was skipped for this run.")
     else:
         add(
-            f"Organism grouped `StratifiedGroupKFold`, 5 folds over "
-            f"{table['gene_id'].nunique():,} genes in "
-            f"{len(set(clustering.organism_groups(table['gene_id'].tolist()))):,} organism groups. "
-            "Every predictor sees the same folds, so the comparison is paired. Mean across folds "
-            "with the fold to fold standard deviation."
+            f"`StratifiedGroupKFold`, 5 folds, {grouping.description}. Every predictor sees the "
+            "same folds, so the comparison is paired. Mean across folds with the fold to fold "
+            "standard deviation."
         )
         add("")
         add("| Predictor | Macro F1 | Accuracy | Spearman rho, predicted against true tier | Mean absolute tier error |")
@@ -446,17 +490,32 @@ def build_report(
         served = next((r for r in cv_results if r.name == "Served model configuration"), None)
         if served is not None:
             margins = []
+            cleared["macro_f1"] = True
+            cleared["spearman_rho"] = True
             for result in cv_results:
                 if result is served:
                     continue
-                gap = served.mean("macro_f1") - result.mean("macro_f1")
-                spread = max(served.std("macro_f1"), result.std("macro_f1"))
-                verdict = "clears" if gap > spread else "does not clear"
-                margins.append(
-                    f"- against **{result.name}**: macro F1 gap {gap:+.3f}, fold to fold spread "
-                    f"{spread:.3f}, so the gap {verdict} the spread."
-                )
-            add("Margin against each baseline, on macro F1:")
+                parts = []
+                for metric, label in (("macro_f1", "macro F1"), ("spearman_rho", "rank correlation")):
+                    gap = served.mean(metric) - result.mean(metric)
+                    spread = max(served.std(metric), result.std(metric))
+                    if gap != gap:
+                        # The majority class has no rank correlation at all, so
+                        # there is nothing to clear rather than a failure to.
+                        parts.append(f"{label} not defined for this baseline")
+                        continue
+                    ok = gap > spread
+                    cleared[metric] = cleared[metric] and ok
+                    parts.append(
+                        f"{label} gap {gap:+.3f} against a spread of {spread:.3f}, "
+                        + ("clears" if ok else "**does not clear**")
+                    )
+                margins.append(f"- against **{result.name}**: " + "; ".join(parts) + ".")
+            add(
+                "Margin against each baseline. The gate asks for the gap to be larger than the "
+                "fold to fold standard deviation on both macro F1 and the rank correlation, so "
+                "both are given."
+            )
             add("")
             lines.extend(margins)
             add("")
@@ -489,6 +548,41 @@ def build_report(
         )
         add("")
         negative = [s for s in gating.WELCH_SERIES if served_welch.rho(s) < 0]
+
+        # The overall verdict, assembled from the clauses rather than asserted.
+        if cv_results is not None:
+            # Each clause carries the sentence to print when it fails, so the
+            # verdict reads as prose rather than as a negated requirement.
+            clauses = [
+                (
+                    cleared["macro_f1"],
+                    "it does not beat every baseline on macro F1 by more than the fold to fold spread",
+                ),
+                (
+                    cleared["spearman_rho"],
+                    "it does not beat every baseline on the rank correlation by more than the fold "
+                    "to fold spread",
+                ),
+                (
+                    not negative,
+                    "its expected tier is negatively correlated with measured yield on the "
+                    + " and ".join(negative)
+                    + (" series" if len(negative) == 1 else " series"),
+                ),
+            ]
+            failed = [sentence for ok, sentence in clauses if not ok]
+            if failed:
+                add(
+                    "**Gate A: not passed.** " + "; and ".join(failed).capitalize() + ". "
+                    "The honest outcome if this stands is the one the plan names: Agent A is "
+                    "demoted to an abstaining agent with a declared competence domain, and the "
+                    "system's tier output comes from the agents that did pass. That is an "
+                    "acceptable result and is written up as one rather than hidden."
+                )
+            else:
+                add("**Gate A: passed.** Every clause holds on the identity clustered split.")
+            add("")
+
         if negative:
             add(
                 "**This clause of Gate A fails outright.** The served model's expected tier is "
@@ -721,6 +815,83 @@ def build_report(
     )
     add("")
 
+    # --- the critic ---------------------------------------------------------
+    add("## The critic")
+    add("")
+    critic = _critic_metadata()
+    if critic is None:
+        add(
+            "**Status: not run.** No critic has been trained. It needs the reserved pool above, "
+            "then `python scripts/train_critic.py`."
+        )
+        add("")
+    else:
+        evaluation = critic.get("evaluation") or {}
+        add(
+            "The critic is trained on out of fold opinions from the agents over the clusters "
+            "outside the pool, and evaluated once, on the pool, against the best single agent. "
+            "The agents that feed it are Agent A and Agent D, the two that produce a distribution "
+            "for a single submitted sequence. Agent B does not exist, and Agent C ranks variants "
+            "within a gene so it has no opinion about a single sequence by construction."
+        )
+        add("")
+        add(f"**Status: {(critic.get('gate') or {}).get('status', 'unknown')}.** {critic.get('verdict', '')}")
+        add("")
+        add(
+            f"Measured on {evaluation.get('n_pool', 0):,} rows in the reserved pool, from a critic "
+            f"trained on {evaluation.get('n_training', 0):,} rows outside it, over three bands."
+        )
+        add("")
+        add("| Predictor | Macro F1 | Accuracy |")
+        add("| :--- | ---: | ---: |")
+        add(
+            f"| The critic | {_fmt(evaluation.get('critic_macro_f1'))} "
+            f"| {_fmt(evaluation.get('critic_accuracy'))} |"
+        )
+        add(
+            f"| Best single agent | {_fmt(evaluation.get('best_single_agent_macro_f1'))} "
+            f"| {_fmt(evaluation.get('best_single_agent_accuracy'))} |"
+        )
+        add(f"| Majority band | n/a | {_fmt(evaluation.get('majority_accuracy'))} |")
+        add("")
+
+        point = critic.get("conflict_threshold")
+        if point:
+            add(
+                "**The abstention policy, which is the part worth having.** The conflict threshold "
+                "is chosen on the pool by the trade off between how often the system answers and "
+                f"how often it is right when it does, not by taste. At a divergence of "
+                f"{_fmt(point.get('threshold'))} the system answers "
+                f"{point.get('answered_fraction', 0) * 100:.0f} per cent of inputs at "
+                f"{_fmt(point.get('accuracy_on_answered'))} accuracy on those, against "
+                f"{_fmt(evaluation.get('best_single_agent_accuracy'))} when it answers everything."
+            )
+            add("")
+            lift = point.get("lift_over_answering_everything")
+            if lift is not None:
+                add(
+                    f"That is a lift of {lift:+.3f} for declining "
+                    f"{(1 - point.get('answered_fraction', 0)) * 100:.0f} per cent of inputs. The "
+                    "mechanism works and the signal is weak: two agents, one of which has not "
+                    "passed its own gate, do not disagree in a way that reliably marks the cases "
+                    "where the answer is wrong. A third agent that passes its gate is what would "
+                    "change this, not a different threshold."
+                )
+                add("")
+
+        curve = critic.get("conflict_curve") or []
+        if curve:
+            add("The whole curve, so the operating point can be argued with:")
+            add("")
+            add("| Divergence threshold | Answered | Accuracy on the answered |")
+            add("| ---: | ---: | ---: |")
+            for entry in curve[:: max(1, len(curve) // 8)]:
+                add(
+                    f"| {_fmt(entry['threshold'])} | {entry['answered_fraction'] * 100:.0f}% "
+                    f"| {_fmt(entry['accuracy_on_answered'])} |"
+                )
+            add("")
+
     # --- leakage ------------------------------------------------------------
     add("## Leakage")
     add("")
@@ -767,13 +938,16 @@ def main() -> int:
     table = pd.read_csv(args.table)
     logger.info(f"Loaded {args.table}: {len(table):,} rows.")
 
+    grouping = clustering.grouping_for(table["gene_id"].tolist())
+    scoped = table[pd.Series(grouping.in_scope, index=table.index)].reset_index(drop=True)
+    scoped_groups = [g for g, keep in zip(grouping.groups, grouping.in_scope) if keep]
+
     cv_results = None
     if not args.skip_cv:
-        groups = clustering.organism_groups(table["gene_id"].tolist())
         cv_results = gating.grouped_cv(
-            table,
+            scoped,
             gating.expression_predictors(_model_params()),
-            groups,
+            scoped_groups,
             n_splits=args.folds,
         )
 
@@ -781,7 +955,7 @@ def main() -> int:
     welch = welch_section(agent)
     sources = available_variant_sets()
 
-    report = build_report(table, cv_results, welch, sources, agent, StructureAgent())
+    report = build_report(table, cv_results, welch, sources, agent, StructureAgent(), grouping)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as handle:
         handle.write(report)

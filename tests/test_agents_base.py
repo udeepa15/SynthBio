@@ -61,11 +61,21 @@ def test_a_gate_that_has_not_been_run_is_not_a_pass():
     assert "never measured" in GateResult().as_line()
 
 
-def test_declared_agents_carry_a_written_down_gate():
-    for agent in (SolubilityAgent(), StructureAgent()):
+def test_every_agent_carries_a_written_down_gate():
+    """
+    Pass or fail, an agent must say what its gate was and what it measured.
+
+    Agent B is still declared and unbuilt, so its gate says what it would have
+    to beat. Agent D has been trained and gated, so its gate says what it did
+    beat. Both are summaries a reader can check against `reports/gates.md`; a
+    gate with no summary is an artifact with no evidence behind it.
+    """
+    for agent in (SolubilityAgent(), StructureAgent(load=False), ExpressionAgent(model=None)):
         gate = agent.provenance().gate
-        assert gate.passed is False
-        assert len(gate.summary) > 40, "a declared agent must say what its gate requires"
+        assert len(gate.summary) > 40, f"{agent.name} does not say what its gate requires"
+
+    unbuilt = SolubilityAgent().provenance().gate
+    assert unbuilt.passed is False, "an agent that does not exist cannot have passed a gate"
 
 
 def test_variant_agent_abstains_on_a_single_sequence():

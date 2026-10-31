@@ -206,22 +206,45 @@ def cluster_with_mmseqs(
             for row_id, protein in records:
                 handle.write(f">{row_id}\n{protein}\n")
 
-        prefix = os.path.join(tmp, "clustered")
-        command = [
-            binary, "easy-cluster", fasta, prefix, os.path.join(tmp, "work"),
-            "--min-seq-id", str(min_identity),
-            "-c", str(coverage),
-            "--cov-mode", "0",
-        ]
-        logger.info("Running: " + " ".join(command))
-        completed = subprocess.run(command, capture_output=True, text=True)
-        if completed.returncode != 0:
-            raise ClusteringUnavailable(
-                f"MMseqs2 easy-cluster failed with exit code {completed.returncode}: "
-                + (completed.stderr or completed.stdout or "no output").strip()[-500:]
-            )
+        # The Windows build drives itself through a shell script and a bundled
+        # busybox that lives beside the executable, so without its own
+        # directory on PATH it fails with "Failed to execute easycluster.sh".
+        # A .bat wrapper needs the command interpreter, which CreateProcess
+        # will not run directly.
+        environment = dict(os.environ)
+        binary_dir = os.path.dirname(os.path.abspath(binary))
+        environment["PATH"] = binary_dir + os.pathsep + environment.get("PATH", "")
+        launcher = ["cmd", "/c", binary] if binary.lower().endswith(".bat") else [binary]
 
-        tsv = prefix + "_cluster.tsv"
+        database = os.path.join(tmp, "db")
+        clusters_db = os.path.join(tmp, "db_clu")
+        tsv = os.path.join(tmp, "clusters.tsv")
+
+        # The explicit three step pipeline rather than `easy-cluster`.
+        # easy-cluster ends by writing a flat FASTA of every cluster's members,
+        # a step this project never reads, and on the Windows build that step
+        # segfaults after the clustering itself has completed. Running the
+        # steps directly skips it and produces the same assignment.
+        steps = [
+            ["createdb", fasta, database],
+            [
+                "cluster", database, clusters_db, os.path.join(tmp, "work"),
+                "--min-seq-id", str(min_identity),
+                "-c", str(coverage),
+                "--cov-mode", "0",
+            ],
+            ["createtsv", database, database, clusters_db, tsv],
+        ]
+        for arguments in steps:
+            command = launcher + arguments
+            logger.info("Running: " + " ".join(command))
+            completed = subprocess.run(command, capture_output=True, text=True, env=environment)
+            if completed.returncode != 0:
+                raise ClusteringUnavailable(
+                    f"MMseqs2 {arguments[0]} failed with exit code {completed.returncode}: "
+                    + (completed.stderr or completed.stdout or "no output").strip()[-500:]
+                )
+
         if not os.path.exists(tsv):
             raise ClusteringUnavailable(f"MMseqs2 produced no cluster table at '{tsv}'.")
         table = pd.read_csv(tsv, sep="\t", header=None, names=["representative", "member"])
@@ -266,7 +289,10 @@ def build_assignment(source: str = "boel2016") -> ClusterAssignment:
     return ClusterAssignment(
         clusters=clusters,
         critic_pool=pool,
-        method=f"mmseqs2 easy-cluster --min-seq-id {MIN_SEQUENCE_IDENTITY} -c {MIN_COVERAGE}",
+        method=(
+            f"mmseqs2 createdb, cluster --min-seq-id {MIN_SEQUENCE_IDENTITY} -c {MIN_COVERAGE} "
+            "--cov-mode 0, createtsv"
+        ),
         min_identity=MIN_SEQUENCE_IDENTITY,
         coverage=MIN_COVERAGE,
         source_counts={source: len(records)},
@@ -307,6 +333,77 @@ def load_assignment(path: str = CLUSTER_REPORT) -> Optional[ClusterAssignment]:
         min_identity=float(payload.get("min_sequence_identity", MIN_SEQUENCE_IDENTITY)),
         coverage=float(payload.get("coverage", MIN_COVERAGE)),
         source_counts=payload.get("source_counts", {}),
+    )
+
+
+@dataclass
+class Grouping:
+    """
+    How a gate should split these rows, and which rows it may use at all.
+
+    `groups` is what a grouped cross validation groups by. `in_scope` is False
+    for every row in a reserved critic pool cluster: the pool is held back from
+    training, from tuning and from gate reporting, so a gate measured on it
+    would be the one number the critic can no longer be trusted against.
+    """
+
+    groups: List[str]
+    in_scope: List[bool]
+    identity_clustered: bool
+    description: str
+
+    @property
+    def n_in_scope(self) -> int:
+        return sum(self.in_scope)
+
+
+def grouping_for(gene_ids: Sequence[str], path: str = CLUSTER_REPORT) -> Grouping:
+    """
+    The split to use for a gate, identity clustered when that is available.
+
+    Falls back to organism grouping, which the served model already uses and
+    which is not a substitute: paralogues inside one organism and homologues
+    across two organisms both still leak. The description says which one ran,
+    so a report can never imply the stronger split when it had the weaker one.
+    """
+    assignment = load_assignment(path)
+    if assignment is None:
+        groups = organism_groups(gene_ids)
+        return Grouping(
+            groups=groups,
+            in_scope=[True] * len(groups),
+            identity_clustered=False,
+            description=(
+                f"organism grouped over {len(set(groups)):,} groups, because no identity clustering "
+                "has been committed"
+            ),
+        )
+
+    pool = set(assignment.critic_pool)
+    groups, in_scope = [], []
+    unassigned = 0
+    for gene_id in gene_ids:
+        cluster = assignment.clusters.get(str(gene_id))
+        if cluster is None:
+            unassigned += 1
+            groups.append(f"unclustered_{gene_id}")
+            in_scope.append(False)
+            continue
+        groups.append(cluster)
+        in_scope.append(cluster not in pool)
+
+    if unassigned:
+        logger.warning(f"{unassigned} rows carry no cluster id and are held out of scope.")
+    kept = sum(in_scope)
+    return Grouping(
+        groups=groups,
+        in_scope=in_scope,
+        identity_clustered=True,
+        description=(
+            f"identity clustered at {assignment.min_identity:g} with a coverage of "
+            f"{assignment.coverage:g}, {len(set(groups)):,} clusters, of which "
+            f"{len(pool):,} are reserved as the critic pool and excluded, leaving {kept:,} rows"
+        ),
     )
 
 

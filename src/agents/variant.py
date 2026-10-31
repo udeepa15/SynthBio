@@ -420,6 +420,7 @@ class VariantAgent:
             out_of_range=check.out_of_range,
             nearest_identity=None,
             identity_checked=False,
+            identity_applicable=False,
             notes=tuple(notes),
         )
 

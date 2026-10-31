@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-10-30",
+  "created_at": "2026-10-31",
   "model_class": "XGBClassifier",
   "model_params": {
     "objective": "binary:logistic",
@@ -30,9 +30,10 @@
   "training_data": {
     "dataset": "Bo\u00ebl et al. 2016, NESG E. coli expression set",
     "path": "data/processed/feature_table_v3.csv",
-    "n_rows": 6348,
-    "n_lowest_band": 1754,
-    "split": "organism grouped StratifiedGroupKFold, 5 folds"
+    "n_rows": 5148,
+    "n_lowest_band": 1442,
+    "split": "identity clustered at 0.3 with a coverage of 0.8, 3,400 clusters, of which 680 are reserved as the critic pool and excluded, leaving 5,148 rows",
+    "identity_clustered": true
   },
   "feature_ranges": {
     "initiation_folding_leader": {
@@ -53,40 +54,45 @@
     },
     "rare_codons_head30": {
       "min": 0.0,
-      "max": 0.4667
+      "max": 0.3667
     }
   },
   "gate": {
     "name": "Gate D",
-    "status": "failed",
-    "summary": "Gate D failed: declaring the vector does not separate from the insert alone, so the vector input is not earning its place in the interface. AUROC 0.609 against 0.588 for the GC of the first 48 nt alone, a difference of +0.021 with a bootstrap interval of +0.006 to +0.037; leader plus insert 0.609 against insert only 0.603, a difference of +0.006 with an interval of -0.002 to +0.013. The split is organism grouped, not identity clustered.",
-    "measured_on": "2026-10-30",
+    "status": "passed",
+    "summary": "Gate D passed. AUROC 0.612 against 0.584 for the GC of the first 48 nt alone, a difference of +0.029 with a bootstrap interval of +0.011 to +0.047; leader plus insert 0.612 against insert only 0.603, a difference of +0.009 with an interval of +0.001 to +0.017.",
+    "measured_on": "2026-10-31",
     "report_path": "reports/gates.md",
-    "baselines_beaten": []
+    "baselines_beaten": [
+      "GC of the first 48 nt alone",
+      "insert only folding"
+    ]
   },
   "gate_detail": {
-    "agent_auroc": 0.6089202042821209,
-    "insert_only_auroc": 0.6031190477490594,
-    "gc_head48_auroc": 0.5877470067794541,
+    "agent_auroc": 0.6122389901894667,
+    "insert_only_auroc": 0.6032440365475487,
+    "gc_head48_auroc": 0.5839093631573944,
     "gc_head48_orientation": "a GC rich 5' region is more likely to land in the lowest band",
-    "leader_folding_alone_auroc": 0.6074437606138391,
-    "insert_folding_alone_auroc": 0.5949757727718819,
-    "n": 6348,
-    "n_lowest_band": 1754,
+    "leader_folding_alone_auroc": 0.6076872006484967,
+    "insert_folding_alone_auroc": 0.5952369101198866,
+    "n": 5148,
+    "n_lowest_band": 1442,
     "agent_vs_gc": {
-      "delta": 0.02145376477815209,
-      "low": 0.00621731524435902,
-      "high": 0.037257421177586195,
+      "delta": 0.028505471476409326,
+      "low": 0.010584918187757569,
+      "high": 0.046919019525068655,
       "separated": true
     },
     "leader_vs_insert": {
-      "delta": 0.005713985107161136,
-      "low": -0.0017620750341779262,
-      "high": 0.013281372385388472,
-      "separated": false
+      "delta": 0.009054859804196923,
+      "low": 0.0006491115896723243,
+      "high": 0.017427769371505655,
+      "separated": true
     },
     "beats_gc_baseline": true,
-    "leader_beats_insert": false,
-    "passed": false
+    "leader_beats_insert": true,
+    "passed": true,
+    "split": "identity clustered at 0.3 with a coverage of 0.8, 3,400 clusters, of which 680 are reserved as the critic pool and excluded, leaving 5,148 rows",
+    "identity_clustered": true
   }
 }

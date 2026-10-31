@@ -1,0 +1,458 @@
+{
+  "created_at": "2026-10-31",
+  "model_class": "Pipeline",
+  "inputs": [
+    "a_low",
+    "a_mid",
+    "a_high",
+    "d_low_prob",
+    "divergence",
+    "d_applies",
+    "a_out_of_range"
+  ],
+  "agents": [
+    "expression",
+    "structure"
+  ],
+  "band_names": {
+    "0": "low",
+    "1": "medium",
+    "2": "high"
+  },
+  "evaluation": {
+    "critic_accuracy": 0.5533333333333333,
+    "critic_macro_f1": 0.37459021325795944,
+    "best_single_agent_accuracy": 0.5433333333333333,
+    "best_single_agent_macro_f1": 0.4255439322945043,
+    "majority_accuracy": 0.5208333333333334,
+    "n_pool": 1200,
+    "n_training": 5148,
+    "beats_best_single_agent": false
+  },
+  "verdict": "The critic does not beat the best single agent on the reserved pool, so the single agent is shipped for the tier and the critic is kept for the agreement score and the abstention policy only. That is the outcome the plan names as legitimate.",
+  "answered_curve": [
+    {
+      "threshold": 0.0,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.020246321967217963,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.040492643934435926,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.06073896590165389,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.08098528786887185,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.10123160983608981,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.12147793180330778,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.14172425377052575,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.1619705757377437,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.18221689770496166,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.20246321967217962,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.2227095416393976,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.24295586360661556,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.2632021855738335,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.2834485075410515,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.3036948295082694,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.3239411514754874,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5533333333333333
+    },
+    {
+      "threshold": 0.3441874734427054,
+      "answered_fraction": 0.9991666666666666,
+      "accuracy_on_answered": 0.5537948290241869
+    },
+    {
+      "threshold": 0.3644337954099233,
+      "answered_fraction": 0.9933333333333333,
+      "accuracy_on_answered": 0.5536912751677853
+    },
+    {
+      "threshold": 0.3846801173771413,
+      "answered_fraction": 0.965,
+      "accuracy_on_answered": 0.5639032815198618
+    },
+    {
+      "threshold": 0.40492643934435923,
+      "answered_fraction": 0.9175,
+      "accuracy_on_answered": 0.5649409627611263
+    },
+    {
+      "threshold": 0.4251727613115772,
+      "answered_fraction": 0.8725,
+      "accuracy_on_answered": 0.5702005730659025
+    },
+    {
+      "threshold": 0.4454190832787952,
+      "answered_fraction": 0.8141666666666667,
+      "accuracy_on_answered": 0.5742067553735927
+    },
+    {
+      "threshold": 0.46566540524601313,
+      "answered_fraction": 0.7533333333333333,
+      "accuracy_on_answered": 0.5851769911504425
+    },
+    {
+      "threshold": 0.4859117272132311,
+      "answered_fraction": 0.6866666666666666,
+      "accuracy_on_answered": 0.5946601941747572
+    },
+    {
+      "threshold": 0.506158049180449,
+      "answered_fraction": 0.6166666666666667,
+      "accuracy_on_answered": 0.6081081081081081
+    },
+    {
+      "threshold": 0.526404371147667,
+      "answered_fraction": 0.5433333333333333,
+      "accuracy_on_answered": 0.6196319018404908
+    },
+    {
+      "threshold": 0.546650693114885,
+      "answered_fraction": 0.48833333333333334,
+      "accuracy_on_answered": 0.6348122866894198
+    },
+    {
+      "threshold": 0.566897015082103,
+      "answered_fraction": 0.42,
+      "accuracy_on_answered": 0.6666666666666666
+    },
+    {
+      "threshold": 0.587143337049321,
+      "answered_fraction": 0.35833333333333334,
+      "accuracy_on_answered": 0.6651162790697674
+    },
+    {
+      "threshold": 0.6073896590165389,
+      "answered_fraction": 0.29333333333333333,
+      "accuracy_on_answered": 0.6676136363636364
+    },
+    {
+      "threshold": 0.6276359809837568,
+      "answered_fraction": 0.22333333333333333,
+      "accuracy_on_answered": 0.7089552238805971
+    },
+    {
+      "threshold": 0.6478823029509748,
+      "answered_fraction": 0.17166666666666666,
+      "accuracy_on_answered": 0.7233009708737864
+    },
+    {
+      "threshold": 0.6681286249181928,
+      "answered_fraction": 0.12833333333333333,
+      "accuracy_on_answered": 0.7077922077922078
+    },
+    {
+      "threshold": 0.6883749468854108,
+      "answered_fraction": 0.09166666666666666,
+      "accuracy_on_answered": 0.7363636363636363
+    },
+    {
+      "threshold": 0.7086212688526287,
+      "answered_fraction": 0.06333333333333334,
+      "accuracy_on_answered": 0.6842105263157895
+    },
+    {
+      "threshold": 0.7288675908198466,
+      "answered_fraction": 0.0375,
+      "accuracy_on_answered": 0.7333333333333333
+    },
+    {
+      "threshold": 0.7491139127870646,
+      "answered_fraction": 0.014166666666666666,
+      "accuracy_on_answered": 0.7058823529411765
+    },
+    {
+      "threshold": 0.7693602347542826,
+      "answered_fraction": 0.0025,
+      "accuracy_on_answered": 0.6666666666666666
+    },
+    {
+      "threshold": 0.7896065567215006,
+      "answered_fraction": 0.0008333333333333334,
+      "accuracy_on_answered": 1.0
+    }
+  ],
+  "operating_point": {
+    "threshold": 0.526404371147667,
+    "answered_fraction": 0.5433333333333333,
+    "accuracy_on_answered": 0.6196319018404908
+  },
+  "conflict_curve": [
+    {
+      "threshold": 0.0179533901175213,
+      "answered_fraction": 0.08333333333333333,
+      "accuracy_on_answered": 0.62
+    },
+    {
+      "threshold": 0.0359067802350426,
+      "answered_fraction": 0.19333333333333333,
+      "accuracy_on_answered": 0.5775862068965517
+    },
+    {
+      "threshold": 0.05386017035256391,
+      "answered_fraction": 0.2925,
+      "accuracy_on_answered": 0.5925925925925926
+    },
+    {
+      "threshold": 0.0718135604700852,
+      "answered_fraction": 0.3725,
+      "accuracy_on_answered": 0.5861297539149888
+    },
+    {
+      "threshold": 0.0897669505876065,
+      "answered_fraction": 0.4558333333333333,
+      "accuracy_on_answered": 0.5776965265082267
+    },
+    {
+      "threshold": 0.10772034070512782,
+      "answered_fraction": 0.5208333333333334,
+      "accuracy_on_answered": 0.5712,
+      "lift_over_answering_everything": 0.027866666666666706
+    },
+    {
+      "threshold": 0.1256737308226491,
+      "answered_fraction": 0.59,
+      "accuracy_on_answered": 0.5663841807909604
+    },
+    {
+      "threshold": 0.1436271209401704,
+      "answered_fraction": 0.6483333333333333,
+      "accuracy_on_answered": 0.5629820051413882
+    },
+    {
+      "threshold": 0.16158051105769172,
+      "answered_fraction": 0.6916666666666667,
+      "accuracy_on_answered": 0.5626506024096386
+    },
+    {
+      "threshold": 0.179533901175213,
+      "answered_fraction": 0.7333333333333333,
+      "accuracy_on_answered": 0.5579545454545455
+    },
+    {
+      "threshold": 0.19748729129273432,
+      "answered_fraction": 0.7716666666666666,
+      "accuracy_on_answered": 0.5561555075593952
+    },
+    {
+      "threshold": 0.21544068141025563,
+      "answered_fraction": 0.8041666666666667,
+      "accuracy_on_answered": 0.5564766839378238
+    },
+    {
+      "threshold": 0.23339407152777691,
+      "answered_fraction": 0.8291666666666667,
+      "accuracy_on_answered": 0.5547738693467337
+    },
+    {
+      "threshold": 0.2513474616452982,
+      "answered_fraction": 0.8525,
+      "accuracy_on_answered": 0.5532746823069403
+    },
+    {
+      "threshold": 0.26930085176281954,
+      "answered_fraction": 0.8716666666666667,
+      "accuracy_on_answered": 0.5506692160611855
+    },
+    {
+      "threshold": 0.2872542418803408,
+      "answered_fraction": 0.8833333333333333,
+      "accuracy_on_answered": 0.5490566037735849
+    },
+    {
+      "threshold": 0.3052076319978621,
+      "answered_fraction": 0.8983333333333333,
+      "accuracy_on_answered": 0.549165120593692
+    },
+    {
+      "threshold": 0.32316102211538345,
+      "answered_fraction": 0.9133333333333333,
+      "accuracy_on_answered": 0.5492700729927007
+    },
+    {
+      "threshold": 0.34111441223290473,
+      "answered_fraction": 0.925,
+      "accuracy_on_answered": 0.5513513513513514
+    },
+    {
+      "threshold": 0.359067802350426,
+      "answered_fraction": 0.9325,
+      "accuracy_on_answered": 0.550491510277033
+    },
+    {
+      "threshold": 0.37702119246794735,
+      "answered_fraction": 0.9416666666666667,
+      "accuracy_on_answered": 0.547787610619469
+    },
+    {
+      "threshold": 0.39497458258546864,
+      "answered_fraction": 0.9516666666666667,
+      "accuracy_on_answered": 0.5481611208406305
+    },
+    {
+      "threshold": 0.4129279727029899,
+      "answered_fraction": 0.9575,
+      "accuracy_on_answered": 0.5483028720626631
+    },
+    {
+      "threshold": 0.43088136282051126,
+      "answered_fraction": 0.9625,
+      "accuracy_on_answered": 0.5471861471861472
+    },
+    {
+      "threshold": 0.44883475293803254,
+      "answered_fraction": 0.9641666666666666,
+      "accuracy_on_answered": 0.547104580812446
+    },
+    {
+      "threshold": 0.46678814305555383,
+      "answered_fraction": 0.9675,
+      "accuracy_on_answered": 0.5469422911283376
+    },
+    {
+      "threshold": 0.4847415331730751,
+      "answered_fraction": 0.9733333333333334,
+      "accuracy_on_answered": 0.5462328767123288
+    },
+    {
+      "threshold": 0.5026949232905964,
+      "answered_fraction": 0.9783333333333334,
+      "accuracy_on_answered": 0.545144804088586
+    },
+    {
+      "threshold": 0.5206483134081178,
+      "answered_fraction": 0.9808333333333333,
+      "accuracy_on_answered": 0.5437553101104503
+    },
+    {
+      "threshold": 0.5386017035256391,
+      "answered_fraction": 0.9825,
+      "accuracy_on_answered": 0.5436810856658185
+    },
+    {
+      "threshold": 0.5565550936431604,
+      "answered_fraction": 0.9841666666666666,
+      "accuracy_on_answered": 0.5436071126164268
+    },
+    {
+      "threshold": 0.5745084837606816,
+      "answered_fraction": 0.9875,
+      "accuracy_on_answered": 0.5434599156118144
+    },
+    {
+      "threshold": 0.5924618738782029,
+      "answered_fraction": 0.9908333333333333,
+      "accuracy_on_answered": 0.543313708999159
+    },
+    {
+      "threshold": 0.6104152639957242,
+      "answered_fraction": 0.9941666666666666,
+      "accuracy_on_answered": 0.5423302598491199
+    },
+    {
+      "threshold": 0.6283686541132455,
+      "answered_fraction": 0.9958333333333333,
+      "accuracy_on_answered": 0.5422594142259414
+    },
+    {
+      "threshold": 0.6463220442307669,
+      "answered_fraction": 0.9966666666666667,
+      "accuracy_on_answered": 0.5426421404682275
+    },
+    {
+      "threshold": 0.6642754343482882,
+      "answered_fraction": 0.9975,
+      "accuracy_on_answered": 0.5421888053467001
+    },
+    {
+      "threshold": 0.6822288244658095,
+      "answered_fraction": 0.9991666666666666,
+      "accuracy_on_answered": 0.5429524603836531
+    },
+    {
+      "threshold": 0.7001822145833307,
+      "answered_fraction": 1.0,
+      "accuracy_on_answered": 0.5433333333333333
+    }
+  ],
+  "conflict_threshold": {
+    "threshold": 0.10772034070512782,
+    "answered_fraction": 0.5208333333333334,
+    "accuracy_on_answered": 0.5712,
+    "lift_over_answering_everything": 0.027866666666666706
+  },
+  "min_answered_fraction": 0.5,
+  "critic_pool": {
+    "clusters": 680,
+    "rows": 1200,
+    "source": "reports/clusters.json"
+  },
+  "split": "identity clustered at 0.3 with a coverage of 0.8, 3,400 clusters, of which 680 are reserved as the critic pool and excluded, leaving 5,148 rows",
+  "gate": {
+    "name": "Critic",
+    "status": "failed",
+    "summary": "The critic does not beat the best single agent on the reserved pool, so the single agent is shipped for the tier and the critic is kept for the agreement score and the abstention policy only. That is the outcome the plan names as legitimate.",
+    "measured_on": "2026-10-31",
+    "report_path": "reports/gates.md"
+  }
+}

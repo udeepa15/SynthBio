@@ -26,12 +26,14 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-from src.predict import predict_construct, build_feature_row
+from src.predict import MODE_AGENTS, predict_construct, build_feature_row
 from src.model import load_model, get_shap_explainer, load_model_metadata
 from src.features import fetch_ncbi_cds, FOLDING_WINDOW_NT, FOLDING_AVG_WINDOW_NT
 from src.xai import render_shap_waterfall
 from src.validation import validate_sequence, blocking_issues, advisory_issues, is_scorable
 from src import provenance as prov_mod
+from src import vectors
+from src.agents.base import AGENT_ORDER
 from src.redesign import (
     CONSTRAINED,
     CONTRADICTED,
@@ -112,6 +114,140 @@ def load_variant_agent():
         return None
 
 
+@st.cache_resource
+def load_structure_agent():
+    """
+    Agent D, the initiation structure agent, loaded once per process.
+
+    Like Agent C it reads its own gate result and abstains unless it records a
+    pass. Unlike Agent C it also needs an input: without a declared vector
+    there is no leader, so there is no initiation window to fold and the agent
+    has no opinion.
+    """
+    try:
+        from src.agents.structure import StructureAgent
+
+        agent = StructureAgent()
+        logger.info(
+            "Agent D loaded. Artifact present: "
+            f"{agent.model is not None}. Gate: {agent.gate().status}."
+        )
+        return agent
+    except Exception as err:
+        logger.error(f"Agent D could not be loaded: {err}", exc_info=False)
+        return None
+
+
+def render_vector_input() -> str:
+    """
+    Ask which expression vector the construct is going into.
+
+    This input exists because of a measurement rather than a preference. Boel's
+    strongest 5' features fold the vector's untranslated leader together with
+    the gene head, and the application could never compute them from a pasted
+    coding sequence because it did not know the vector. Gate D tested whether
+    asking is worth it, by checking that leader plus insert folding beats
+    insert only folding on the same rows under an identity clustered split. It
+    does, so the question is asked. If that gate had failed the input would
+    have been dropped, and `reports/gates.md` records the margin.
+    """
+    agent = load_structure_agent()
+    gate = agent.gate() if agent is not None else None
+
+    with st.expander("Expression vector, for the 5' initiation window", expanded=False):
+        if gate is None or not gate.passed:
+            st.caption(
+                "The structure agent has not passed its gate, so the vector is recorded but does "
+                "not enter any prediction. "
+                + (gate.summary if gate is not None else "")
+            )
+        else:
+            st.caption(
+                "The transcript a ribosome reads starts in the vector, not at your start codon. "
+                "Declaring the vector lets the 5' folding energy be computed over the real "
+                "initiation window, leader plus insert, rather than over the insert alone."
+            )
+        choice = st.selectbox(
+            "Expression vector",
+            vectors.choices(),
+            index=0,
+            format_func=lambda key: vectors.get(key).label,
+        )
+        custom = st.text_input(
+            "Or paste the 5' leader yourself, from the transcription start to the base before ATG",
+            value="",
+            placeholder="Leave empty to use the vector above",
+            help=(
+                "A wrong leader produces a confident folding number with nothing behind it, so "
+                "supply one only if you know it."
+            ),
+        ).strip()
+        leader = vectors.resolve_leader(choice, custom)
+        if leader:
+            source = vectors.get(choice).source if not custom else "Supplied by you."
+            st.caption(f"Leader in use: {len(leader)} nt. {source}")
+        else:
+            st.caption(
+                "No vector declared, so the structure agent abstains and the 5' folding figures "
+                "below are computed over the construct's own head only."
+            )
+    return leader
+
+
+def render_agent_panel(verdict) -> None:
+    """
+    One row per agent: its question, whether it applied, and its gate result.
+
+    Showing the gate result in the interface is unusual and is the strongest
+    honesty signal this application can give. Three of the four agents abstain
+    at the moment, and each says why, which is more informative than a blank.
+
+    The tier and the risk badge above still come from the single model path.
+    This panel reports the agents beside it rather than replacing it, because
+    the plan only flips that switch once the tier bearing agent passes its own
+    gate, and Agent A has not.
+    """
+    if verdict is None:
+        return
+
+    st.markdown("#### The agents")
+    st.caption(
+        "Each agent answers one question and is allowed to decline. An agent speaks only when it "
+        "holds an artifact whose recorded gate is a pass, so an abstention here is a result and "
+        "not an error. Every figure is in `reports/gates.md`."
+    )
+
+    for name in AGENT_ORDER:
+        opinion = verdict.opinions.get(name)
+        if opinion is None:
+            continue
+        gate = opinion.gate
+        mark = "✅" if opinion.applies else "➖"
+        with st.expander(f"{mark} {name.title()}: {opinion.question}", expanded=False):
+            if opinion.applies:
+                if opinion.proba and set(opinion.proba) == {0, 1}:
+                    st.write(
+                        f"Probability of the lowest expression band: **{opinion.proba[1]:.0%}**"
+                    )
+                elif opinion.score is not None:
+                    st.write(f"Score: **{opinion.score:.3f}**")
+                top = opinion.top_attribution(3)
+                if top:
+                    st.caption(
+                        "Top attribution: "
+                        + ", ".join(f"{feature} {value:+.3f}" for feature, value in top)
+                    )
+            else:
+                st.caption(opinion.abstain_reason or "No reason recorded.")
+            st.caption(gate.as_line())
+            for note in opinion.domain.notes:
+                st.caption(note)
+
+    st.caption(
+        f"Critic: {verdict.state_label}. {verdict.explanation} {verdict.agreement.as_line()}."
+    )
+
+
 def render_figure(container, value: str, label: str, note: str = "") -> None:
     """
     One figure with its full label.
@@ -141,12 +277,22 @@ def render_verdict(res: dict, prov) -> None:
     """
     The single verdict band: tier, risk state and provenance.
 
-    Note: the risk figure and the tier are computed independently today, the
-    risk from a biophysical penalty sum and the tier from the model. Making
-    one quantity drive both is tracked as a separate change; this function is
-    the one place the band is rendered, so that change lands here.
+    The risk figure and the tier now come from the same place when the agent
+    path produced a verdict: the critic derives risk from the probability the
+    agents put on the low expression band, so a tier and a risk can no longer
+    contradict each other. The old biophysical penalty sum survives as a
+    diagnostic and as agent input features, which is where it belongs, and is
+    still used when no agent could answer.
     """
-    risk = res["risk_score"]
+    verdict = res.get("critic_verdict")
+    critic_risk = verdict.risk if verdict is not None and verdict.risk is not None else None
+    risk = critic_risk if critic_risk is not None else res["risk_score"]
+    risk_note = (
+        verdict.risk_basis
+        if critic_risk is not None
+        else "A fixed penalty rule over GC, CAI and the folding proxy. It does not read the "
+        "model's tier."
+    )
     state = risk_state(risk)
     meta = VERDICT_STATES[state]
 
@@ -166,10 +312,7 @@ def render_verdict(res: dict, prov) -> None:
         tier_cols[1], f"{res['predicted_yield']}", "Tier midpoint (arbitrary units)",
         "Not a measured yield. It is the nominal midpoint assigned to the predicted tier.",
     )
-    render_figure(
-        tier_cols[2], f"{risk}%", "Construct failure risk",
-        "A fixed penalty rule over GC, CAI and the folding proxy. It does not read the model's tier.",
-    )
+    render_figure(tier_cols[2], f"{risk}%", "Construct failure risk", risk_note)
     if confidence is not None:
         render_figure(
             tier_cols[3], f"{confidence * 100:.0f}%", "Confidence in the tier",
@@ -747,6 +890,8 @@ def main():
                 logger.error(f"NCBI lookup failed for '{accession_id}': {err}", exc_info=True)
                 st.error(f"Could not fetch '{accession_id}' from NCBI: {err}")
 
+    leader = render_vector_input()
+
     normalised, issues = validate_sequence(sequence_input)
 
     if normalised:
@@ -784,7 +929,12 @@ def main():
     logger.info(f"Running prediction for {len(normalised)} nt sequence...")
     try:
         res = predict_construct(
-            normalised, model=model, explainer=explainer, feature_ranges=training_ranges
+            normalised,
+            model=model,
+            explainer=explainer,
+            feature_ranges=training_ranges,
+            mode=MODE_AGENTS,
+            leader_5prime=leader or None,
         )
         logger.info(
             f"Prediction complete -> Risk: {res['risk_score']}%, Tier: {res['predicted_tier']}, "
@@ -803,6 +953,7 @@ def main():
 
     with diagnosis_tab:
         render_diagnosis(res, prov, model)
+        render_agent_panel(res.get("critic_verdict"))
 
     with redesign_tab:
         render_redesign(normalised, model, res)

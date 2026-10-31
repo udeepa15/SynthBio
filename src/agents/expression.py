@@ -173,7 +173,7 @@ class ExpressionAgent:
             sequence=request.sequence,
         )
 
-        attribution = self._attribution(matrix)
+        attribution = self._attribution(matrix, max(proba, key=proba.get))
 
         logger.info(
             f"Agent A: expected tier {score:.3f}, modal tier {max(proba, key=proba.get)}, "
@@ -190,9 +190,13 @@ class ExpressionAgent:
             provenance=provenance,
         )
 
-    def _attribution(self, matrix: pd.DataFrame) -> Dict[str, float]:
+    def _attribution(self, matrix: pd.DataFrame, predicted_class: Optional[int] = None) -> Dict[str, float]:
         """
         Signed SHAP values for the predicted tier, keyed by model feature name.
+
+        Signed and for the predicted tier specifically, which is the same
+        convention the waterfall uses, so the panel and the waterfall cannot
+        describe one construct two different ways.
 
         Returns an empty dict with no explainer, rather than the placeholder
         constants the older display path fell back on. An empty attribution is
@@ -203,7 +207,7 @@ class ExpressionAgent:
         try:
             from src.model import explain_prediction_shap
 
-            values = explain_prediction_shap(self.explainer, matrix)
+            values = explain_prediction_shap(self.explainer, matrix, predicted_class)
             return {str(k): float(v) for k, v in (values or {}).items()}
         except Exception as err:
             logger.warning(f"SHAP attribution unavailable for Agent A: {err}")

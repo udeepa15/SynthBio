@@ -16,18 +16,28 @@ working tree. So this is the rule based critic of milestone M1: it passes a
 single agent through, computes the agreement components that are computable,
 and records that no critic model was fitted.
 
-Its thresholds are not fitted. The plan sets the conflict threshold on the
-critic pool by choosing the conflicted rate that maximises accuracy on the
-answered subset. With no critic pool the thresholds below are declared values,
-and every verdict carries `thresholds_fitted = False` so that nothing
-downstream can present a tuned abstention rate that was never tuned.
+Its threshold is fitted when a critic has been trained, and declared when one
+has not. `scripts/train_critic.py` chooses the conflict threshold on the
+reserved pool by the trade off between how often the system answers and how
+often it is right when it does, and writes it beside the critic artifact. This
+module reads it from there, and every verdict carries `thresholds_fitted` so
+that nothing downstream can present a tuned abstention rate that was never
+tuned.
+
+What that fit actually showed is worth knowing before leaning on it: declining
+on disagreement raises accuracy on the answered subset by a few points while
+declining about half the inputs. The mechanism works, the signal is weak, and
+`reports/gates.md` carries the whole curve rather than the single point.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from src.agents.base import (
@@ -66,14 +76,43 @@ STATE_LABELS = {
     NOT_ANSWERABLE: "Not answerable from the trained agents",
 }
 
-# Declared thresholds, not fitted ones. See the module docstring.
-#
-# Jensen Shannon divergence in bits between two distributions over three bands
-# runs from 0 to 1. Two agents whose modal band differs and which are each
-# moderately confident land around 0.3, which is where the conflict threshold
-# sits.
-CONFLICT_JS_THRESHOLD = 0.30
-THRESHOLDS_FITTED = False
+# The declared fallback, used when no critic has been trained. Jensen Shannon
+# divergence in bits between two distributions over three bands runs from 0 to
+# 1. Two agents whose modal band differs and which are each moderately
+# confident land around 0.3, which is where this sits.
+DEFAULT_CONFLICT_JS_THRESHOLD = 0.30
+
+CRITIC_METADATA_PATH = "models/critic_metadata.json"
+
+
+@lru_cache(maxsize=1)
+def fitted_threshold() -> Optional[Dict[str, float]]:
+    """
+    The conflict threshold chosen on the reserved pool, or None.
+
+    Cached because it is read on every verdict and changes only when a critic
+    is retrained.
+    """
+    if not os.path.exists(CRITIC_METADATA_PATH):
+        return None
+    try:
+        with open(CRITIC_METADATA_PATH, "r", encoding="utf-8") as handle:
+            recorded = (json.load(handle) or {}).get("conflict_threshold")
+    except (OSError, json.JSONDecodeError) as err:
+        logger.warning(f"Could not read '{CRITIC_METADATA_PATH}': {err}")
+        return None
+    if not recorded or "threshold" not in recorded:
+        return None
+    return {str(k): float(v) for k, v in recorded.items()}
+
+
+def conflict_threshold() -> float:
+    fitted = fitted_threshold()
+    return float(fitted["threshold"]) if fitted else DEFAULT_CONFLICT_JS_THRESHOLD
+
+
+def thresholds_are_fitted() -> bool:
+    return fitted_threshold() is not None
 
 # Which agents, if they abstain, make the question unanswerable rather than
 # merely less supported. Agent C abstaining on a single sequence is normal.
@@ -145,7 +184,7 @@ class AgreementScore:
 
     @property
     def conflicted(self) -> bool:
-        if self.distributional is not None and self.distributional > CONFLICT_JS_THRESHOLD:
+        if self.distributional is not None and self.distributional > conflict_threshold():
             return True
         # A negative rank component means the ranker and GC3 order the same
         # pair in opposite directions, which is the known failure mode.
@@ -177,7 +216,7 @@ class CriticVerdict:
     risk_basis: str = ""
     explanation: str = ""
     conflicts: Tuple[str, ...] = ()
-    thresholds_fitted: bool = THRESHOLDS_FITTED
+    thresholds_fitted: bool = field(default_factory=thresholds_are_fitted)
     critic_model: Optional[str] = None
 
     @property
@@ -223,7 +262,7 @@ def _domain_pressure(opinions: Sequence[AgentOpinion]) -> Tuple[float, List[str]
             names = ", ".join(str(o["feature"]) for o in opinion.domain.out_of_range)
             notes.append(f"{opinion.agent}: outside the training range on {names}.")
             pressure += min(1.0, len(opinion.domain.out_of_range) / 3.0)
-        if not opinion.domain.identity_checked:
+        if opinion.domain.identity_applicable and not opinion.domain.identity_checked:
             pressure += 0.5
             notes.extend(n for n in opinion.domain.notes if n)
     return min(1.0, pressure / len(applying)), notes
@@ -279,7 +318,11 @@ def score_agreement(opinions: Sequence[AgentOpinion], rank_agreement: Optional[f
     )
 
 
-def _risk_from_bands(bands: Mapping[int, float], pressure: float) -> Tuple[float, str]:
+def _risk_from_bands(
+    bands: Mapping[int, float],
+    pressure: float,
+    contributors: Sequence[AgentOpinion] = (),
+) -> Tuple[float, str]:
     """
     Failure risk from the agents' own distributions, not from a parallel rule.
 
@@ -297,10 +340,22 @@ def _risk_from_bands(bands: Mapping[int, float], pressure: float) -> Tuple[float
     """
     low = float(bands.get(LOW_BAND, 0.0))
     risk = 100.0 * min(1.0, low + 0.25 * pressure * (1.0 - low))
+
+    # The caveat is assembled from the agents that actually contributed, so it
+    # cannot go stale when one of them passes its gate.
+    gated = [o.agent for o in contributors if o.gate.passed]
+    ungated = [o.agent for o in contributors if not o.gate.passed]
+    provenance = []
+    if gated:
+        provenance.append(f"{', '.join(gated)} has passed its gate")
+    if ungated:
+        provenance.append(f"{', '.join(ungated)} has not")
     basis = (
         "Probability the applying agents place on the low expression band, raised for distance "
-        "from their training domain. It is not a calibrated probability: no agent feeding it has "
-        "passed its gate or been calibrated, so read it as an ordering and not as a percentage."
+        "from their training domain. "
+        + ("; ".join(provenance) + ". " if provenance else "")
+        + "No agent feeding it has been calibrated, so read it as an ordering rather than as a "
+        "percentage."
     )
     return round(min(risk, 99.9), 1), basis
 
@@ -365,7 +420,7 @@ def combine(
     conflicts: List[str] = []
     if agreement.conflicted:
         for pair in agreement.pairs:
-            if float(pair["divergence"]) > CONFLICT_JS_THRESHOLD:
+            if float(pair["divergence"]) > conflict_threshold():
                 a, b = pair["agents"]
                 ma, mb = pair["modal"]
                 conflicts.append(
@@ -380,7 +435,8 @@ def combine(
             )
 
     pressure = agreement.domain
-    risk, risk_basis = _risk_from_bands(bands, pressure)
+    contributors = [o for o in applying if o.agent in distributions]
+    risk, risk_basis = _risk_from_bands(bands, pressure, contributors)
     expression = by_name.get(EXPRESSION)
     expected_tier = expression.score if expression is not None and expression.applies else None
     tier = None
@@ -411,7 +467,9 @@ def combine(
     # stated in the explanation, but it does not relabel the verdict, because a
     # state that fires on every input carries no information.
     out_of_domain = any(o.domain.out_of_range for o in applying)
-    identity_unknown = any(not o.domain.identity_checked for o in applying)
+    identity_unknown = any(
+        o.domain.identity_applicable and not o.domain.identity_checked for o in applying
+    )
     state = AGREED_OUT_OF_DOMAIN if out_of_domain else AGREED
     explanation = (
         "The agents that apply are concordant."

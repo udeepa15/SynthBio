@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-10-30",
+  "created_at": "2026-10-31",
   "model_class": "XGBRanker",
   "model_params": {
     "objective": "rank:pairwise",
@@ -30,62 +30,63 @@
     "folding_energy": "GC derived proxy, strictly monotonic in 5' GC"
   },
   "training_data": {
-    "dataset": "Cambray G, Guimaraes JC, Arkin AP. Evaluation of 244,000 synthetic sequences reveals design principles to optimize translation in Escherichia coli. Nat Biotechnol 36:1005-1015 (2018).",
+    "dataset": "Cambray G, Guimaraes JC, Arkin AP. Evaluation of 244,000 synthetic sequences reveals design principles to optimize translation in Escherichia coli. Nat Biotechnol 36:1005-1015 (2018)., Goodman DB, Church GM, Kosuri S. Causes and effects of N-terminal codon bias in bacterial genes. Science 342:475-479 (2013).",
     "sources": {
-      "cambray2018": 74900
+      "cambray2018": 74900,
+      "goodman2013": 8438
     },
-    "n_rows": 74900,
-    "n_groups": 4126,
+    "n_rows": 83338,
+    "n_groups": 4780,
     "held_out": "Welch 2009 in full; see reports/gates.md",
     "sequence_length_nt": {
-      "min": 96,
+      "min": 33,
       "median": 96,
       "max": 96
     }
   },
   "feature_ranges": {
     "gc_content": {
-      "min": 31.25,
-      "max": 69.79
+      "min": 21.21,
+      "max": 78.79
     },
     "gc3_content": {
       "min": 0.0,
-      "max": 93.75
+      "max": 100.0
     },
     "codon_adaptation_index": {
-      "min": 0.221,
-      "max": 0.815
+      "min": 0.064,
+      "max": 1.0
     },
     "rare_codon_fraction": {
       "min": 0.0,
-      "max": 0.3438
+      "max": 0.7273
     },
     "rare_codons_head30": {
       "min": 0.0,
-      "max": 0.3333
+      "max": 0.7273
     },
     "head_folding_48": {
       "min": -24.7,
       "max": 0.0
     },
     "genewide_folding_avg": {
-      "min": -18.07,
-      "max": -1.07
+      "min": -21.0,
+      "max": 0.0
     }
   },
   "gate": {
     "name": "Gate C",
     "status": "failed",
-    "summary": "Gate C failed. polymerase: rho +0.156 does not beat GC3 alone at +0.643; scFv: rho +0.212 does not beat GC3 alone at +0.394.",
-    "measured_on": "2026-10-30",
+    "summary": "Gate C failed. polymerase: rho +0.018 does not beat GC3 alone at +0.643; scFv: rho +0.183 does not beat GC3 alone at +0.394.",
+    "measured_on": "2026-10-31",
     "report_path": "reports/gates.md",
     "baselines_beaten": []
   },
   "welch": {
     "candidate": {
-      "overall_rho": -0.2891138475485382,
-      "polymerase_rho": 0.15595105672969967,
-      "scfv_rho": 0.21151026392961875
+      "overall_rho": -0.34980232177482307,
+      "polymerase_rho": 0.018020022246941044,
+      "scfv_rho": 0.18255131964809382
     },
     "gc3": {
       "overall_rho": 0.4516567959379657,
@@ -99,8 +100,8 @@
     }
   },
   "heldout_groups": {
-    "model_mean_tau": 0.11839261167845049,
-    "gc3_mean_tau": -0.0758527334367323,
-    "n_groups": 825
+    "model_mean_tau": 0.15636962961365758,
+    "gc3_mean_tau": -0.076145039598952,
+    "n_groups": 956
   }
 }

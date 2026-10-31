@@ -269,35 +269,25 @@ def predict_construct(
             pred_score = 1
         logger.info(f"Heuristic Output -> Tier: {tier}, Yield: {pred_yield} AU")
         
-    # Compute SHAP feature importances if explainer is provided
-    shap_importances = {}
-    if explainer is not None:
+    # Local attribution for this construct, keyed by the model's own feature
+    # names.
+    #
+    # What this replaced is worth recording. The display dict here used to map
+    # five hardcoded labels onto SHAP values, with `folding_energy` among them.
+    # `folding_energy` is not a model feature, so that row fell back to its
+    # default of 0.20 for every sequence ever scored, and the six features that
+    # do carry attribution were dropped. A constant presented as an attribution
+    # is worse than no attribution, so the labels are gone and the values are
+    # whatever the explainer actually returns.
+    feature_importances: Dict[str, float] = {}
+    if explainer is not None and model is not None:
         logger.info("Computing local SHAP feature attributions...")
         shap_df = feat_df[list(model.feature_names_in_)] if hasattr(model, "feature_names_in_") else feat_df
-        shap_importances = explain_prediction_shap(explainer, shap_df)
-        
-    if shap_importances:
         feature_importances = {
-            "GC Content (%)": round(shap_importances.get("GC_percent", 0.25), 3),
-            "Codon Adaptation Index (CAI)": round(shap_importances.get("CAI", 0.35), 3),
-            "mRNA Folding Stability (MFE)": round(shap_importances.get("folding_energy", 0.20), 3),
-            "GRAVY Score": round(shap_importances.get("gravy_score", 0.10), 3),
-            "Isoelectric Point (pI)": round(shap_importances.get("pI", 0.10), 3)
+            str(name): float(value)
+            for name, value in (explain_prediction_shap(explainer, shap_df, pred_class) or {}).items()
         }
-    else:
-        logger.info("SHAP explainer not active; computing heuristic feature contribution weights...")
-        gravy_val = features.get("gravy_score", 0.0)
-        gravy_val = 0.0 if np.isnan(gravy_val) else gravy_val
-        pi_val = features.get("pI", 7.0)
-        pi_val = 7.0 if np.isnan(pi_val) else pi_val
-        feature_importances = {
-            "GC Content (%)": round(0.25 * (1 + (features["gc_content"] - 50)/100), 3),
-            "Codon Adaptation Index (CAI)": round(0.35 * features["codon_adaptation_index"], 3),
-            "mRNA Folding Stability (MFE)": round(0.20 * abs(features["mrna_folding_stability"])/20, 3),
-            "GRAVY Score": round(0.10 * (abs(gravy_val) + 0.1), 3),
-            "Isoelectric Point (pI)": round(0.10 * (pi_val / 14.0), 3)
-        }
-    
+
     result_summary = {
         "sequence_length": len(sequence),
         "features": features,

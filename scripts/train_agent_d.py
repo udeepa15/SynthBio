@@ -309,7 +309,7 @@ def summarise(results: Dict[str, object]) -> str:
             "Gate D failed: declaring the vector does not separate from the insert alone, so the "
             "vector input is not earning its place in the interface"
         )
-    return f"{verdict}. {detail}. The split is organism grouped, not identity clustered."
+    return f"{verdict}. {detail}."
 
 
 def main() -> int:
@@ -336,15 +336,25 @@ def main() -> int:
 
     frame = pd.read_csv(args.table)
     features = compute_features(frame, vector.leader, args.features_cache or None)
+
+    # The critic pool is held back from training, tuning and gate reporting
+    # alike, so it is removed before anything is measured rather than after.
+    grouping = clustering.grouping_for(frame["name"].tolist())
+    keep = pd.Series(grouping.in_scope, index=frame.index)
+    frame = frame[keep].reset_index(drop=True)
+    features = features[keep.to_numpy()].reset_index(drop=True)
+    groups = [g for g, in_scope in zip(grouping.groups, grouping.in_scope) if in_scope]
+
     labels = (frame["E"].astype(int) == LOWEST_BAND).astype(int)
-    groups = clustering.organism_groups(frame["name"].tolist())
     logger.info(
-        f"{len(frame):,} constructs, {int(labels.sum()):,} in the lowest band, "
-        f"{len(set(groups)):,} organism groups."
+        f"{len(frame):,} constructs in scope, {int(labels.sum()):,} in the lowest band; "
+        f"split is {grouping.description}."
     )
 
     results = evaluate_gate_d(features, labels, groups)
-    logger.info(summarise(results))
+    results["split"] = grouping.description
+    results["identity_clustered"] = grouping.identity_clustered
+    logger.info(summarise(results) + f" The split is {grouping.description}.")
 
     from xgboost import XGBClassifier
 
@@ -371,7 +381,8 @@ def main() -> int:
             "path": args.table,
             "n_rows": int(len(frame)),
             "n_lowest_band": int(labels.sum()),
-            "split": "organism grouped StratifiedGroupKFold, 5 folds",
+            "split": grouping.description,
+            "identity_clustered": grouping.identity_clustered,
         },
         "feature_ranges": {
             column: {"min": float(features[column].min()), "max": float(features[column].max())}

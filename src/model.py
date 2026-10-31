@@ -234,28 +234,51 @@ def get_shap_explainer(model: Any) -> Any:
         return None
 
 
-def explain_prediction_shap(explainer: Any, X_sample: pd.DataFrame) -> Dict[str, float]:
-    """Extract local SHAP feature importances for a sample dataframe."""
+def explain_prediction_shap(
+    explainer: Any,
+    X_sample: pd.DataFrame,
+    predicted_class: Optional[int] = None,
+) -> Dict[str, float]:
+    """
+    Local SHAP attribution for one construct, keyed by feature name.
+
+    With `predicted_class` given, the signed values for that tier are returned:
+    positive means the feature pushed the model towards the tier it predicted,
+    negative means it pushed away. That is the same convention the waterfall in
+    `src/xai.py` uses, so the two cannot tell different stories about one
+    construct.
+
+    Without it, the mean absolute value across tiers is returned, which says
+    how much a feature mattered but not which way. Mixing the two was a real
+    defect in this project: one panel showed signed values for the predicted
+    tier while another showed magnitudes across all six, under labels that
+    implied they were the same thing.
+    """
     if explainer is None or shap is None:
         return {}
     try:
-        logger.info(f"Extracting SHAP feature importances for sample feature vector...")
-        shap_exp = explainer(X_sample)
-        vals = shap_exp.values
-        
-        # If multi-class 3D array (samples, features, classes), average across classes and samples
-        if hasattr(vals, "ndim") and vals.ndim == 3:
-            mean_abs = np.abs(vals).mean(axis=(0, 2))
-        elif hasattr(vals, "ndim") and vals.ndim == 2:
-            mean_abs = np.abs(vals).mean(axis=0)
-        elif isinstance(vals, list):
-            mean_abs = np.mean([np.abs(v).mean(axis=0) for v in vals], axis=0)
+        logger.info("Extracting SHAP feature attribution for the sample feature vector...")
+        values = explainer(X_sample).values
+        if isinstance(values, list):
+            # Older SHAP returns one array per class.
+            values = np.stack(values, axis=-1)
+        values = np.asarray(values)
+
+        if values.ndim == 3:  # (samples, features, classes)
+            if predicted_class is not None and 0 <= int(predicted_class) < values.shape[2]:
+                per_feature = values[0, :, int(predicted_class)]
+            else:
+                per_feature = np.abs(values).mean(axis=(0, 2))
+        elif values.ndim == 2:  # (samples, features)
+            per_feature = values[0]
         else:
-            mean_abs = np.abs(vals).flatten()
-            
-        feature_names = X_sample.columns.tolist()
-        result = {feature_names[i]: float(mean_abs[i]) for i in range(min(len(feature_names), len(mean_abs)))}
-        logger.info(f"SHAP importances computed: {result}")
+            per_feature = values.flatten()
+
+        names = X_sample.columns.tolist()
+        result = {
+            names[i]: float(per_feature[i]) for i in range(min(len(names), len(per_feature)))
+        }
+        logger.info(f"SHAP attribution computed for {len(result)} features.")
         return result
     except Exception as err:
         logger.error(f"SHAP explanation computation failed: {str(err)}", exc_info=False)

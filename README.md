@@ -122,10 +122,23 @@ answer here, not a failure.
 
 | Agent | Question | Status |
 | :--- | :--- | :--- |
-| A, expression | Will this protein express, and in which tier | Wraps the served artifact. Gate blocked: the identity clustered split needs MMseqs2, which is not installed |
+| A, expression | Will this protein express, and in which tier | Wraps the served artifact. Gated on the identity clustered split, with the critic pool held out |
 | B, solubility | Will it be soluble rather than inclusion bodies | Declared, not built. No solubility dataset on disk |
 | C, codon variant | Of two synonymous versions of one gene, which expresses better | Trained on Cambray 2018 and gated on Welch. Positive on both series, does not beat GC3, so it abstains |
-| D, structure | Does the 5' region fold so as to block initiation | Trained and gated. Beats the GC of the first 48 nt, but declaring the vector does not separate from the insert alone, so the vector selector is not worth adding. Abstains |
+| D, structure | Does the 5' region fold so as to block initiation | Trained and **passes Gate D** on the clustered split. Needs a declared vector, so the app now asks for one |
+
+The critic is trained and evaluated with:
+
+```bash
+python scripts/train_critic.py
+```
+
+It learns from out of fold agent opinions on the clusters outside the reserved pool and is scored
+once, on the pool, against the best single agent. It did not beat that agent, so the single agent
+is what produces the tier and the critic is kept for the agreement score and the abstention policy,
+which is the outcome the plan names as legitimate. Its conflict threshold is fitted on the pool by
+the answered against accuracy curve rather than chosen by taste, and `reports/gates.md` carries the
+whole curve.
 
 `reports/gates.md` is the single source of truth for every numeric claim in this project.
 Regenerate it, along with every baseline and every gate that can be run:
@@ -157,10 +170,11 @@ python scripts/cluster.py
 ```
 
 Agent D is trained with `python scripts/train_agent_d.py`, which also runs its gate. That gate's
-second clause is a question about the interface rather than about the model, and its answer is
-recorded: declaring the expression vector does not demonstrably improve the prediction, so the
-vector selector is not added. `src/vectors.py` and the initiation folding feature stay, so the
-question can be reopened against data with more than one vector in it.
+second clause is a question about the interface rather than about the model: does declaring the
+expression vector actually improve the prediction. Under the identity clustered split it does, by
+a slim but separated margin, so the application asks for the vector and `src/vectors.py` supplies
+the leader. Under the weaker organism grouped split it did not, which is worth knowing about how
+much that split was costing.
 
 Agent C is the agent the plan puts first, because the within gene question is the one the
 tier model demonstrably gets wrong. Train and gate it once a source is on disk; it writes

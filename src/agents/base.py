@@ -122,6 +122,11 @@ class DomainCheck:
     out_of_range: Tuple[Dict[str, Any], ...] = ()
     nearest_identity: Optional[float] = None
     identity_checked: bool = False
+    # False for an agent the check does not apply to, which is different from
+    # an agent that could have run it and could not. Agent D reads the
+    # initiation window rather than the protein, so identity to a training
+    # protein says nothing about whether it is in domain.
+    identity_applicable: bool = True
     notes: Tuple[str, ...] = ()
 
     @property
@@ -136,6 +141,8 @@ class DomainCheck:
         An unrun identity check leaves this False, so an input is never called
         in domain on the strength of a range check alone.
         """
+        if not self.identity_applicable:
+            return self.in_training_range
         return self.in_training_range and self.identity_checked and (
             self.nearest_identity is not None
         )

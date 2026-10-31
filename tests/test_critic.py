@@ -104,10 +104,37 @@ def test_risk_comes_from_the_agents_and_not_from_a_parallel_rule():
     assert "calibrated" in low.risk_basis, "the risk figure must say what it is not"
 
 
-def test_the_critic_never_claims_fitted_thresholds_or_a_trained_model():
+def test_the_critic_claims_a_fitted_threshold_only_when_one_was_fitted():
+    """
+    `thresholds_fitted` must track the artifact, not a constant.
+
+    It was False while no critic had been trained, and it is True once one has
+    written its threshold beside itself. Either way it has to match what is on
+    disk, because it is the flag the interface uses to decide whether it may
+    describe the abstention rate as tuned.
+    """
+    from src.agents.critic import fitted_threshold, thresholds_are_fitted
+
     verdict = combine([tier_opinion(HIGH)])
-    assert verdict.thresholds_fitted is False
+    assert verdict.thresholds_fitted is thresholds_are_fitted()
+    assert verdict.thresholds_fitted is (fitted_threshold() is not None)
+    # The trained critic lost to the best single agent on the reserved pool, so
+    # no critic model is used for the tier.
     assert verdict.critic_model is None
+
+
+def test_the_conflict_threshold_comes_from_the_pool_when_one_was_fitted():
+    from src.agents.critic import DEFAULT_CONFLICT_JS_THRESHOLD, conflict_threshold, fitted_threshold
+
+    fitted = fitted_threshold()
+    if fitted is None:
+        assert conflict_threshold() == DEFAULT_CONFLICT_JS_THRESHOLD
+        return
+    assert conflict_threshold() == fitted["threshold"]
+    assert 0.0 <= conflict_threshold() <= 1.0
+    # A fitted point has to carry what it bought, or it is a number with no
+    # argument behind it.
+    assert "answered_fraction" in fitted and "accuracy_on_answered" in fitted
 
 
 def test_jensen_shannon_is_bounded_and_symmetric():

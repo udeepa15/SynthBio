@@ -34,6 +34,8 @@ models/*
 !models/agent_c_variant_ranker_metadata.json
 !models/agent_d_structure.joblib
 !models/agent_d_structure_metadata.json
+!models/critic.joblib
+!models/critic_metadata.json
 
 # Environment & IDE
 .env
@@ -53,3 +55,4 @@ data/external/cambray2018/
 data/external/boel2016/
 data/external/agent_c_features.csv
 data/external/agent_d_features.csv
+data/external/goodman2013/

@@ -9,10 +9,9 @@ failure.
 
 Current standing, which the interface is expected to show rather than summarise:
 
-- Agent A, expression tier. Wraps the served artifact unchanged. Gate blocked:
-  identity clustered splits need MMseqs2, which is not installed. The training
-  sequences themselves have been recovered, so this is now an install and not a
-  missing dataset.
+- Agent A, expression tier. Wraps the served artifact unchanged. Now measured
+  on the identity clustered split the gate asks for, with the reserved critic
+  pool held out of training, tuning and reporting alike.
 - Agent B, solubility. Declared, not built. No solubility dataset on disk.
 - Agent C, codon variant ranking. Built, trained on Cambray 2018 and gated
   against Welch 2009. It is positive on both Welch series, so unlike the tier
@@ -21,12 +20,20 @@ Current standing, which the interface is expected to show rather than summarise:
   keeps ranking on the tier model with the GC3 corroboration check as its guard.
   `reports/gates.md` carries the numbers.
 - Agent D, structure. Built, trained on Boel with the vector's 5' leader
-  declared, and gated. It beats the GC of the first 48 nt at finding the lowest
-  expression band, AUROC 0.609 against 0.588, but declaring the vector does not
-  separate from the insert alone, 0.609 against 0.603 with a bootstrap interval
-  straddling zero. That second clause is a test of the interface change, so its
-  answer is that the vector selector should not be added to the application.
-  The agent abstains.
+  declared, and it passes Gate D on the identity clustered split: AUROC 0.612
+  against 0.584 for the GC of the first 48 nt alone, and leader plus insert
+  folding separates from insert only, 0.612 against 0.603. The second margin is
+  slim and its interval only just excludes zero, so the claim is that declaring
+  the vector helps, not that it helps much. It applies only when a vector is
+  declared, which is why the application now asks.
+
+The critic exists and is trained. On the reserved pool it did not beat the
+best single agent, macro F1 0.375 against 0.426, so the single agent produces
+the tier and the critic is kept for the agreement score, the four verdict
+states and the abstention policy. Its conflict threshold is fitted on that pool
+rather than declared. Declining on disagreement lifts accuracy on the answered
+subset by about three points while declining about half the inputs, which is a
+working mechanism on a weak signal.
 
 Nothing here should be presented as an accuracy improvement. If the specialists
 pass their gates the combined system will be better than one overloaded model,
