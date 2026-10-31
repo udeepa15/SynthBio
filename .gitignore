@@ -32,6 +32,8 @@ models/*
 # project is trying not to ship.
 !models/agent_c_variant_ranker.joblib
 !models/agent_c_variant_ranker_metadata.json
+!models/agent_d_structure.joblib
+!models/agent_d_structure_metadata.json
 
 # Environment & IDE
 .env
@@ -50,3 +52,4 @@ htmlcov/
 data/external/cambray2018/
 data/external/boel2016/
 data/external/agent_c_features.csv
+data/external/agent_d_features.csv

@@ -20,8 +20,13 @@ Current standing, which the interface is expected to show rather than summarise:
   GC3 alone on either, which is the bar. So it abstains, and the redesign loop
   keeps ranking on the tier model with the GC3 corroboration check as its guard.
   `reports/gates.md` carries the numbers.
-- Agent D, structure. Declared, not built. Blocked by a missing input, the
-  expression vector's 5' leader, rather than by a missing dataset.
+- Agent D, structure. Built, trained on Boel with the vector's 5' leader
+  declared, and gated. It beats the GC of the first 48 nt at finding the lowest
+  expression band, AUROC 0.609 against 0.588, but declaring the vector does not
+  separate from the insert alone, 0.609 against 0.603 with a bootstrap interval
+  straddling zero. That second clause is a test of the interface change, so its
+  answer is that the vector selector should not be added to the application.
+  The agent abstains.
 
 Nothing here should be presented as an accuracy improvement. If the specialists
 pass their gates the combined system will be better than one overloaded model,

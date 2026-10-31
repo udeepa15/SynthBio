@@ -317,6 +317,57 @@ def calculate_genewide_folding_avg(
     return round(sum(energies) / len(energies), 2)
 
 
+def _clean(sequence: str) -> str:
+    """Uppercase the sequence and drop whitespace. Shared by the helpers below."""
+    return "".join((sequence or "").upper().split())
+
+
+# Window around the start codon that the initiation folding feature covers.
+# Welch's own published descriptor spans -42 to +50 relative to the A of ATG,
+# and scripts/welch2009_validation.py already computes a proxy over those
+# bounds, so the real folding feature keeps them rather than introducing a
+# third convention into the project.
+INITIATION_UPSTREAM_NT = 42
+INITIATION_DOWNSTREAM_NT = 50
+
+
+def initiation_window(leader: str, cds: str,
+                      upstream: int = INITIATION_UPSTREAM_NT,
+                      downstream: int = INITIATION_DOWNSTREAM_NT) -> str:
+    """
+    The stretch of transcript a ribosome meets at initiation.
+
+    The last `upstream` nucleotides of the vector's 5' leader followed by the
+    first `downstream` nucleotides of the coding sequence. With no leader this
+    is the coding sequence head alone, which is what the application could
+    compute before a vector could be declared, so the two cases stay
+    comparable.
+    """
+    lead = _clean(leader).replace("U", "T")
+    insert = _clean(cds)
+    return (lead[-upstream:] if lead and upstream else "") + insert[:downstream]
+
+
+def calculate_initiation_folding(leader: str, cds: str,
+                                 upstream: int = INITIATION_UPSTREAM_NT,
+                                 downstream: int = INITIATION_DOWNSTREAM_NT) -> Optional[float]:
+    """
+    Real ViennaRNA folding energy of the initiation window, in kcal/mol.
+
+    This is the servable counterpart of Boel's Gz48v, which folds the vector 5'
+    untranslated region together with the gene head and is therefore the
+    strongest feature in the Boel table that the application has never been
+    able to compute. It becomes computable the moment a vector is declared.
+
+    Returns None when ViennaRNA is unavailable, like every other folding
+    function here, so the caller can fall back rather than fail.
+    """
+    window = initiation_window(leader, cds, upstream, downstream)
+    if not window:
+        return None
+    return calculate_folding_energy(window)
+
+
 def calculate_protein_features(sequence: str) -> Dict[str, float]:
     """
     Translate DNA sequence to amino acid sequence (stopping at first stop codon)

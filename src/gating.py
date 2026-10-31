@@ -381,6 +381,86 @@ def score_welch(
     return scoring
 
 
+# --- The folding unit test, which Gate D depends on -------------------------
+
+CAMBRAY_FEATURE_CACHE = "data/external/agent_c_features.csv"
+CAMBRAY_VARIANTS = "data/external/cambray2018/variants.csv"
+
+
+def cambray_folding_check(
+    features_path: str = CAMBRAY_FEATURE_CACHE,
+    variants_path: str = CAMBRAY_VARIANTS,
+) -> Optional[Dict[str, Any]]:
+    """
+    Does this project's folding code track measured expression, and is the
+    proxy really GC.
+
+    The plan requires this before Agent D is trained: recompute the project's
+    folding features on Cambray and confirm they track measured expression. If
+    the folding implementation has a bug, this is where it shows, because
+    Cambray varies the 5' region against a fixed reporter and measures protein
+    directly.
+
+    Two things are measured. First, the real ViennaRNA energies against protein
+    level, both across the library and within groups of synonymous variants,
+    where the protein is held constant and only the codons move. Second, the
+    historical GC derived proxy against the GC it is supposed to summarise, to
+    confirm the claim that retiring it from Agent D loses nothing.
+
+    Returns None when the Cambray extract is not on disk.
+    """
+    if not (os.path.exists(features_path) and os.path.exists(variants_path)):
+        return None
+
+    from scipy.stats import spearmanr
+
+    features = pd.read_csv(features_path)
+    variants = pd.read_csv(variants_path, usecols=["variant_id", "sequence", "protein"])
+    merged = features.merge(variants, on="variant_id")
+    if merged.empty:
+        return None
+
+    head = merged["sequence"].str[:48]
+    merged["gc_head48"] = head.apply(lambda s: 100.0 * (s.count("G") + s.count("C")) / max(len(s), 1))
+    merged["folding_proxy"] = head.apply(
+        lambda s: -1.5 * len(s) * (((s.count("G") + s.count("C")) / max(len(s), 1)) ** 1.5)
+    )
+
+    def rho(column: str) -> float:
+        value = spearmanr(merged[column], merged["protein"]).statistic
+        return float(value) if value == value else float("nan")
+
+    from Bio.Seq import Seq
+
+    merged["peptide"] = [str(Seq(s).translate()) for s in merged["sequence"]]
+    within: Dict[str, List[float]] = {c: [] for c in ("head_folding_48", "gc_head48", "gc3_content")}
+    groups = 0
+    for _, group in merged.groupby("peptide"):
+        if len(group) < 4 or group["protein"].nunique() < 2:
+            continue
+        groups += 1
+        for column in within:
+            if group[column].nunique() > 1:
+                value = spearmanr(group[column], group["protein"]).statistic
+                if value == value:
+                    within[column].append(float(value))
+
+    result = {
+        "n": int(len(merged)),
+        "n_groups": groups,
+        "overall": {c: rho(c) for c in ("head_folding_48", "genewide_folding_avg", "folding_proxy", "gc_head48")},
+        "within_group": {c: float(np.mean(v)) if v else float("nan") for c, v in within.items()},
+        "proxy_vs_gc": float(spearmanr(merged["folding_proxy"], merged["gc_head48"]).statistic),
+        "proxy_vs_real": float(spearmanr(merged["folding_proxy"], merged["head_folding_48"]).statistic),
+    }
+    logger.info(
+        f"Cambray folding check on {result['n']:,} variants: head folding against protein "
+        f"{result['overall']['head_folding_48']:+.3f}, proxy against head GC "
+        f"{result['proxy_vs_gc']:+.3f}."
+    )
+    return result
+
+
 @dataclass
 class GateCOutcome:
     """Whether Gate C passed, and on what evidence."""

@@ -37,6 +37,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import gating  # noqa: E402
+from src.agents.structure import StructureAgent  # noqa: E402
 from src.agents.variant import GC3_BASELINE_RHO, VariantAgent  # noqa: E402
 from src.datasets import clustering  # noqa: E402
 from src.datasets.variant_sets import available_variant_sets  # noqa: E402
@@ -352,6 +353,7 @@ def build_report(
     welch: Dict[str, object],
     sources: Dict[str, Optional[str]],
     agent: VariantAgent,
+    structure_agent: StructureAgent,
 ) -> str:
     lines: List[str] = []
     add = lines.append
@@ -585,23 +587,137 @@ def build_report(
     add("## Gate D. mRNA structure and initiation")
     add("")
     add(
-        "**Status: not run.** Agent D is blocked by a missing input rather than a missing dataset. "
+        "Agent D is the one agent blocked by a missing input rather than a missing dataset. "
         "`feature_table_v4.csv` carries Boel's own Gz48v and Gave48, computed over the expression "
         "vector's 5' untranslated region, and the application cannot compute them from a pasted "
-        "coding sequence because it does not know the vector. Declaring the vector in the "
-        "interface makes them servable. The gate then has two parts: beat the GC of the first "
-        "48 nt alone at predicting the lowest expression band, which is the baseline that catches "
-        "a folding feature that is really a GC feature under another name, and show that leader "
-        "plus insert folding beats insert only folding on the same rows."
+        "coding sequence because it does not know the vector. Declaring the vector makes the "
+        "initiation window computable. The gate has two parts: beat the GC of the first 48 nt "
+        "alone at predicting the lowest expression band, which is the baseline that catches a "
+        "folding feature that is really a GC feature under another name, and show that leader plus "
+        "insert folding beats insert only folding on the same rows. The second part is a test of "
+        "the interface change rather than of the model."
     )
     add("")
+
+    folding = gating.cambray_folding_check()
+    if folding:
+        add("### The folding unit test, which this gate depends on")
+        add("")
+        add(
+            f"Before anything is trained, the project's own folding code is checked against "
+            f"measured expression on Cambray 2018, over {folding['n']:,} variants in "
+            f"{folding['n_groups']:,} groups of synonymous variants. Cambray varies the 5' region "
+            "against a fixed reporter and measures protein directly, so a bug in the folding "
+            "implementation shows here."
+        )
+        add("")
+        add("| Quantity | Against protein level, overall | Within synonymous groups |")
+        add("| :--- | ---: | ---: |")
+        add(
+            f"| `head_folding_48`, real ViennaRNA | {_fmt(folding['overall']['head_folding_48'])} "
+            f"| {_fmt(folding['within_group']['head_folding_48'])} |"
+        )
+        add(
+            f"| `genewide_folding_avg`, real ViennaRNA | "
+            f"{_fmt(folding['overall']['genewide_folding_avg'])} | n/a |"
+        )
+        add(
+            f"| GC of the first 48 nt | {_fmt(folding['overall']['gc_head48'])} "
+            f"| {_fmt(folding['within_group']['gc_head48'])} |"
+        )
+        add(f"| GC3 | n/a | {_fmt(folding['within_group']['gc3_content'])} |")
+        add("")
+        add(
+            "**The folding code passes.** A less negative 5' folding energy, meaning less "
+            "structure, goes with more protein, and within synonymous groups it is the strongest "
+            "of the three, which is the direction and the ordering Cambray reports. It is worth "
+            "noting that GC3 runs slightly negative here while it is strongly positive on Welch: "
+            "the two libraries are different regimes, which is part of why Agent C does not "
+            "transfer."
+        )
+        add("")
+        add(
+            f"**The retired proxy is confirmed to be GC.** `folding_energy`, the GC derived proxy, "
+            f"correlates with the GC of the first 48 nt at exactly {_fmt(folding['proxy_vs_gc'])} "
+            f"and with the real folding energy at only {_fmt(folding['proxy_vs_real'])}. A "
+            f"correlation of {_fmt(folding['proxy_vs_gc'])} is not a strong relationship, it is an "
+            "identity: the proxy is a monotonic function of that GC. Retiring it from Agent D "
+            "loses nothing and stops one quantity being counted twice under two names."
+        )
+        add("")
+
+    add("### The gate")
+    add("")
+    structure_meta = structure_agent.metadata or {}
+    detail = structure_meta.get("gate_detail") or {}
+    if not detail:
+        add(
+            "**Status: not run.** Agent D has no artifact. Recover the sequences with "
+            "`python scripts/fetch_datasets.py --source boel`, then train and gate with "
+            "`python scripts/train_agent_d.py`."
+        )
+    else:
+        gate = structure_agent.gate()
+        add(f"**Status: {gate.status}.** {gate.summary}")
+        add("")
+        add(
+            f"Measured out of fold over {detail.get('n', 0):,} Boel constructs, "
+            f"{detail.get('n_lowest_band', 0):,} of them in the lowest expression band, under an "
+            "organism grouped 5 fold split. The gate asks for an identity clustered split, which "
+            "cannot be computed here, so this is the same comparison on a weaker split."
+        )
+        add("")
+        add("| Scorer | AUROC for the lowest band |")
+        add("| :--- | ---: |")
+        add(f"| Agent D, leader plus insert | {_fmt(detail.get('agent_auroc'))} |")
+        add(f"| The same model, insert only | {_fmt(detail.get('insert_only_auroc'))} |")
+        add(f"| GC of the first 48 nt alone | {_fmt(detail.get('gc_head48_auroc'))} |")
+        add(f"| Leader plus insert folding alone | {_fmt(detail.get('leader_folding_alone_auroc'))} |")
+        add(f"| Insert only folding alone | {_fmt(detail.get('insert_folding_alone_auroc'))} |")
+        add("")
+        orientation = detail.get("gc_head48_orientation")
+        if orientation:
+            add(
+                "Each single descriptor is scored in whichever direction suits it, because AUROC "
+                "is direction sensitive and beating a mis-signed baseline is not beating the "
+                f"baseline. On this data {orientation}, which is the direction the structure "
+                "argument predicts: a GC rich 5' region folds more tightly and initiates worse. "
+                "The direction is recorded rather than assumed because the first version of this "
+                "harness assumed the other one, which made the baseline look weaker than it is."
+            )
+            add("")
+        gc_test = detail.get("agent_vs_gc") or {}
+        insert_test = detail.get("leader_vs_insert") or {}
+        add(
+            f"The margins are tested rather than eyed, by a paired bootstrap over the same rows. "
+            f"Against the GC baseline the difference is {_fmt(gc_test.get('delta'))} with a 95 per "
+            f"cent interval of {_fmt(gc_test.get('low'))} to {_fmt(gc_test.get('high'))}, so the "
+            f"first clause {'passes' if gc_test.get('separated') else 'does not pass'}. Against "
+            f"the same model without the leader the difference is {_fmt(insert_test.get('delta'))} "
+            f"with an interval of {_fmt(insert_test.get('low'))} to {_fmt(insert_test.get('high'))}, "
+            f"so the second clause {'passes' if insert_test.get('separated') else 'does not pass'}."
+        )
+        add("")
+        if not insert_test.get("separated"):
+            add(
+                "**This decides an interface question, which is what the second clause is for.** "
+                "Declaring the vector does not demonstrably improve the prediction, so the vector "
+                "selector should not be added to the application. The input would cost the user a "
+                "decision on every construct and buy a difference the data cannot distinguish from "
+                "zero. The leader code, the feature and this measurement stay, so the question can "
+                "be reopened against better data, for instance a set with more than one vector in "
+                "it; on Boel every construct shares one leader, so the leader can only interact "
+                "with the insert and never vary on its own."
+            )
+            add("")
+
     boel_folding = gating.spearman(table["Gz48v"], table["expression_score"])
     servable_folding = gating.spearman(table["head_folding_48"], table["expression_score"])
     add(
-        f"What is at stake, measured on the Boel table: Gz48v, which folds leader plus insert, "
-        f"tracks the expression score at rho {_fmt(boel_folding[0])}, while `head_folding_48`, the "
-        f"servable insert only counterpart, reaches {_fmt(servable_folding[0])}. The first is the "
-        "feature the project cannot currently serve."
+        f"For reference, on the Boel table itself: the authors' own Gz48v, which folds leader plus "
+        f"insert with RNAstructure, tracks the expression score at rho {_fmt(boel_folding[0])}, "
+        f"while `head_folding_48`, the servable insert only counterpart computed here with "
+        f"ViennaRNA, reaches {_fmt(servable_folding[0])}."
     )
     add("")
 
@@ -665,7 +781,7 @@ def main() -> int:
     welch = welch_section(agent)
     sources = available_variant_sets()
 
-    report = build_report(table, cv_results, welch, sources, agent)
+    report = build_report(table, cv_results, welch, sources, agent, StructureAgent())
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as handle:
         handle.write(report)

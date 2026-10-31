@@ -122,10 +122,10 @@ answer here, not a failure.
 
 | Agent | Question | Status |
 | :--- | :--- | :--- |
-| A, expression | Will this protein express, and in which tier | Wraps the served artifact. Gate blocked: the clustered split needs the training sequences, which are not in the tree |
+| A, expression | Will this protein express, and in which tier | Wraps the served artifact. Gate blocked: the identity clustered split needs MMseqs2, which is not installed |
 | B, solubility | Will it be soluble rather than inclusion bodies | Declared, not built. No solubility dataset on disk |
-| C, codon variant | Of two synonymous versions of one gene, which expresses better | Built and wired in, abstaining. No within gene training data on disk, so Gate C has not been run |
-| D, structure | Does the 5' region fold so as to block initiation | Declared, not built. Blocked by a missing input, the vector's 5' leader, rather than by a missing dataset |
+| C, codon variant | Of two synonymous versions of one gene, which expresses better | Trained on Cambray 2018 and gated on Welch. Positive on both series, does not beat GC3, so it abstains |
+| D, structure | Does the 5' region fold so as to block initiation | Trained and gated. Beats the GC of the first 48 nt, but declaring the vector does not separate from the insert alone, so the vector selector is not worth adding. Abstains |
 
 `reports/gates.md` is the single source of truth for every numeric claim in this project.
 Regenerate it, along with every baseline and every gate that can be run:
@@ -155,6 +155,12 @@ built from, which is what identity clustering and the reserved critic pool need:
 ```bash
 python scripts/cluster.py
 ```
+
+Agent D is trained with `python scripts/train_agent_d.py`, which also runs its gate. That gate's
+second clause is a question about the interface rather than about the model, and its answer is
+recorded: declaring the expression vector does not demonstrably improve the prediction, so the
+vector selector is not added. `src/vectors.py` and the initiation folding feature stay, so the
+question can be reopened against data with more than one vector in it.
 
 Agent C is the agent the plan puts first, because the within gene question is the one the
 tier model demonstrably gets wrong. Train and gate it once a source is on disk; it writes
