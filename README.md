@@ -191,6 +191,27 @@ which is the fix for the backwards ranking described above.
 
 ---
 
+## 🎨 The interface
+
+Built to the plan in `docs/synthbio-ui-plan.pdf`, which is regenerated with
+`python docs/make_ui_plan.py`.
+
+The screen is arranged in three depths. Depth one is the verdict: one of the critic's four states
+as a headline, one sentence, and one action. Depth two is why: a per codon map of the construct,
+the features that actually moved this answer, and a strip of four agent cards. Depth three is
+everything auditable, behind expanders.
+
+| Module | What it holds |
+| :--- | :--- |
+| `app/ui.py` | The type scale, the accent, the figure card, the verdict band and the number formatting. Every figure carries its own caveat, because a caveat stacked between sections gets skipped |
+| `app/sequence_map.py` | The per codon track, its colour channels and the redesign diff. Altair only, so no new dependency |
+| `app/agents_view.py` | The agent strip, the per agent detail and the flow diagram whose lanes grey out for agents that abstained |
+
+Nothing in the interface work changed a number, deleted a caveat or let an agent speak that had
+not passed its gate.
+
+---
+
 ## 🧪 Running Tests
 
 Execute unit tests to verify feature calculations and model outputs:

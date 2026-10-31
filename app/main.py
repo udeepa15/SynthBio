@@ -34,6 +34,8 @@ from src.validation import validate_sequence, blocking_issues, advisory_issues, 
 from src import provenance as prov_mod
 from src import vectors
 from src.agents.base import AGENT_ORDER
+from src.agents.critic import AGREED, AGREED_OUT_OF_DOMAIN, CONFLICTED, NOT_ANSWERABLE
+from app import agents_view, sequence_map, ui
 from src.redesign import (
     CONSTRAINED,
     CONTRADICTED,
@@ -54,13 +56,6 @@ SAMPLE_SEQUENCE = (
 
 # Verdict states. Each carries a text label and a distinct glyph, so the state
 # is legible without relying on the colour of the band.
-VERDICT_STATES = {
-    "low": {"label": "LOW RISK", "glyph": "●", "icon": "✅"},
-    "moderate": {"label": "MODERATE RISK", "glyph": "◆", "icon": "⚠️"},
-    "high": {"label": "HIGH RISK", "glyph": "▲", "icon": "⛔"},
-}
-
-
 @st.cache_resource
 def load_trained_artifacts():
     """
@@ -249,40 +244,77 @@ def render_agent_panel(verdict) -> None:
 
 
 def render_figure(container, value: str, label: str, note: str = "") -> None:
+    """One figure with its full label, through the shared card primitive."""
+    ui.figure(container, value, label, note)
+
+
+# How each critic state is rendered: the band colour, the headline, and the
+# action the screen is arranged around. The conflicted state is the one this
+# architecture exists to be able to draw, so it gets the same weight as an
+# answer rather than the styling of an error.
+VERDICT_LAYOUT = {
+    AGREED: {"state": "good", "action": "Open the Redesign tab to look for a better codon choice."},
+    AGREED_OUT_OF_DOMAIN: {
+        "state": "caution",
+        "action": "Treat the tier as an extrapolation. The evidence below says which feature is "
+                  "outside which range.",
+    },
+    CONFLICTED: {
+        "state": "bad",
+        "action": "Do not read a tier off this. Measure one construct and come back.",
+    },
+    NOT_ANSWERABLE: {
+        "state": "neutral",
+        "action": "Nothing trained could answer. Only the validated GRAVY rule is left.",
+    },
+}
+
+TIER_SENTENCE = {
+    0: "The agents put this construct in the lowest expression band.",
+    1: "The agents put this construct in the lowest expression band.",
+    2: "The agents put this construct in the middle of the range.",
+    3: "The agents put this construct in the middle of the range.",
+    4: "The agents put this construct in the highest expression band.",
+    5: "The agents put this construct in the highest expression band.",
+}
+
+
+def verdict_headline(res: dict, verdict) -> tuple:
     """
-    One figure with its full label.
+    The one statement at the top of the screen, and the sentence under it.
 
-    st.metric truncates a long label to a single clipped line, which is how
-    "5' folding proxy (48 nt)" became "5' folding proxy …" and hid the very
-    qualification it exists to carry. A heading plus a caption wraps instead,
-    so the label stays readable at any column width, using native elements
-    rather than injected CSS.
+    Driven by the critic's four states rather than by the risk percentage. A
+    percentage is an input to a decision; the state is the decision, which is
+    why it is what the rest of the page is arranged around.
     """
-    container.markdown(f"### {value}")
-    container.caption(label)
-    if note:
-        container.caption(note)
+    if verdict is None:
+        tier = res.get("predicted_tier")
+        return "good", f"Predicted {tier}", "", ""
 
-
-def risk_state(risk: float) -> str:
-    """Map the risk figure to a verdict state."""
-    if risk < 30.0:
-        return "low"
-    if risk < 60.0:
-        return "moderate"
-    return "high"
+    layout = VERDICT_LAYOUT.get(verdict.state, VERDICT_LAYOUT[NOT_ANSWERABLE])
+    if verdict.shows_tier:
+        headline = str(res.get("predicted_tier") or f"Tier {verdict.tier}")
+        if verdict.state == AGREED_OUT_OF_DOMAIN:
+            headline += ", outside the training range"
+        lede = TIER_SENTENCE.get(verdict.tier, "")
+    elif verdict.state == CONFLICTED:
+        headline = "The evidence disagrees"
+        lede = "No tier is shown, because the agents point in different directions on this construct."
+    else:
+        headline = "Not answerable"
+        lede = "No agent that has passed its gate could answer for this construct."
+    return layout["state"], headline, lede, layout["action"]
 
 
 def render_verdict(res: dict, prov) -> None:
     """
-    The single verdict band: tier, risk state and provenance.
+    Depth one: one statement, one sentence, one action, and the risk beside it.
 
     The risk figure and the tier now come from the same place when the agent
     path produced a verdict: the critic derives risk from the probability the
     agents put on the low expression band, so a tier and a risk can no longer
-    contradict each other. The old biophysical penalty sum survives as a
-    diagnostic and as agent input features, which is where it belongs, and is
-    still used when no agent could answer.
+    contradict each other. The old biophysical penalty sum survives as the
+    fallback and as agent input features, which is where it belongs.
     """
     verdict = res.get("critic_verdict")
     critic_risk = verdict.risk if verdict is not None and verdict.risk is not None else None
@@ -293,38 +325,40 @@ def render_verdict(res: dict, prov) -> None:
         else "A fixed penalty rule over GC, CAI and the folding proxy. It does not read the "
         "model's tier."
     )
-    state = risk_state(risk)
-    meta = VERDICT_STATES[state]
 
-    st.markdown(f"### {meta['glyph']} {meta['label']} — construct failure risk {risk}%")
-
-    banner = {"low": st.success, "moderate": st.warning, "high": st.error}[state]
-    banner(
-        f"**{meta['label']}** ({risk}% failure risk)  ·  "
-        f"Predicted expression tier: **{res['predicted_tier']}**",
-        icon=meta["icon"],
-    )
+    state, headline, lede, action = verdict_headline(res, verdict)
+    ui.band(state, headline, lede)
+    if action:
+        ui.note(action)
 
     confidence = res.get("confidence")
-    tier_cols = st.columns(4 if confidence is not None else 3)
-    render_figure(tier_cols[0], str(res["predicted_tier"]), "Predicted expression tier")
-    render_figure(
-        tier_cols[1], f"{res['predicted_yield']}", "Tier midpoint (arbitrary units)",
-        "Not a measured yield. It is the nominal midpoint assigned to the predicted tier.",
-    )
-    render_figure(tier_cols[2], f"{risk}%", "Construct failure risk", risk_note)
-    if confidence is not None:
-        render_figure(
-            tier_cols[3], f"{confidence * 100:.0f}%", "Confidence in the tier",
-            "The model's own probability for the tier above. With six tiers, chance alone is 17%.",
-        )
+    figures = [{
+        "value": ui.percent(risk, 1),
+        "label": "Construct failure risk",
+        "note": risk_note,
+    }]
+    if confidence is not None and (verdict is None or verdict.shows_tier):
+        figures.append({
+            "value": ui.percent(confidence, 0, already_scaled=False),
+            "label": "Confidence in the tier",
+            "note": "The model's own probability for the tier above. With six tiers, chance alone "
+                    "is 17%.",
+        })
+    if verdict is not None:
+        figures.append({
+            "value": f"{verdict.agreement.n_applying} of 4",
+            "label": "Agents that applied",
+            "note": "An agent answers only when it holds an artifact whose gate is a pass and the "
+                    "input is inside its competence.",
+        })
+    ui.figures(figures)
+
+    if verdict is not None and verdict.conflicts:
+        for conflict in verdict.conflicts:
+            st.error(conflict, icon="⛔")
 
     render_unservable_notice(res)
     render_out_of_range_notice(res)
-
-    st.caption(prov.as_line())
-    for note in prov.caveats():
-        st.caption(f"Note: {note}")
 
 
 def render_unservable_notice(res: dict) -> None:
@@ -376,69 +410,107 @@ def render_out_of_range_notice(res: dict) -> None:
     )
 
 
+def top_drivers(res: dict, verdict, limit: int = 3) -> list:
+    """
+    The features that actually moved this answer, largest absolute first.
+
+    Chosen by attribution rather than fixed, which is the point: the old
+    interface showed the same five features in the same order for every
+    construct, under a heading that called three of the strongest ones
+    additional.
+    """
+    attribution = {}
+    if verdict is not None:
+        opinion = verdict.opinions.get("expression")
+        if opinion is not None and opinion.attribution:
+            attribution = opinion.attribution
+    if not attribution:
+        attribution = res.get("feature_importances") or {}
+    ranked = sorted(attribution.items(), key=lambda kv: -abs(kv[1]))[:limit]
+    return [name for name, _ in ranked]
+
+
+# Model feature name to the display label and the extractor key behind it.
+FEATURE_DISPLAY = {
+    "GC_percent": ("GC content", "gc_content", "%", 1),
+    "GC3": ("GC3, wobble position", "gc3_content", "%", 1),
+    "CAI": ("Codon adaptation index", "codon_adaptation_index", "", 3),
+    "rare_codon_fraction": ("Rare codon fraction", "rare_codon_fraction", "", 3),
+    "rare_codons_head30": ("Rare codons, first 30", "rare_codons_head30", "", 3),
+    "head_folding_48": ("5' folding, 48 nt", "head_folding_48", " kcal/mol", 2),
+    "genewide_folding_avg": ("Folding energy, gene wide", "genewide_folding_avg", " kcal/mol", 2),
+    "gravy_score": ("GRAVY, hydrophobicity", "gravy_score", "", 3),
+    "pI": ("Isoelectric point", "pI", "", 2),
+    "length_codons": ("Length", "length_codons", " codons", 0),
+}
+
+FEATURE_NOTES = {
+    "GC3": "The strongest single predictor of yield on Welch's synonymous variants.",
+    "rare_codon_fraction": "A moderate share goes with higher yield, not lower.",
+    "head_folding_48": "Real ViennaRNA energy over the construct's own head.",
+    "genewide_folding_avg": "Real ViennaRNA energy, averaged over sliding windows.",
+    "gravy_score": "Above 0.4 is the validated flag for the lowest expression band.",
+}
+
+
+def feature_figure(res: dict, model_name: str, with_note: bool = True) -> dict:
+    label, key, suffix, places = FEATURE_DISPLAY.get(
+        model_name, (model_name, model_name, "", 3)
+    )
+    value = res["features"].get(key)
+    return {
+        "value": ui.number(value, places, suffix),
+        "label": label,
+        "note": FEATURE_NOTES.get(model_name, "") if with_note else "",
+    }
+
+
+def render_drivers(res: dict, verdict) -> None:
+    """Depth two: only the features that moved this particular answer."""
+    drivers = top_drivers(res, verdict)
+    if not drivers:
+        return
+    ui.section(
+        "What moved this answer",
+        "Chosen by attribution for this construct, not a fixed list. Signed SHAP values for the "
+        "predicted tier are in the evidence below.",
+    )
+    ui.figures([feature_figure(res, name) for name in drivers])
+
+
 def render_features(res: dict) -> None:
-    """The five computed features, full width, labelled for what they are."""
-    st.markdown("#### Computed features")
+    """
+    Depth three: every computed feature, in one row rather than two.
+
+    The old layout split these across Computed features and Additional
+    measures, a heading that told the reader the second row mattered less. GC3
+    was in the second row and is the strongest single predictor on Welch, so
+    the split was not only unhelpful, it was backwards.
+
+    The GC derived folding proxy is gone from the display. reports/gates.md now
+    records it as a monotonic function of 5' GC at a correlation of exactly
+    minus one, so showing it beside the real ViennaRNA energy invited a reader
+    to treat one quantity under two names as two measurements.
+    """
+    names = [n for n in FEATURE_DISPLAY if res["features"].get(FEATURE_DISPLAY[n][1]) is not None]
+    for start_index in range(0, len(names), 5):
+        ui.figures([feature_figure(res, n, with_note=False) for n in names[start_index:start_index + 5]])
 
     f = res["features"]
-    gravy_score = f.get("gravy_score")
-    pi_value = f.get("pI")
-
-    def fmt(value, suffix=""):
-        if value is None or (isinstance(value, float) and np.isnan(value)):
-            return "N/A"
-        return f"{value}{suffix}"
-
-    cols = st.columns(5)
-    render_figure(cols[0], fmt(f["gc_content"], "%"), "GC content", "Whole transcript.")
-    render_figure(
-        cols[1], fmt(f["codon_adaptation_index"]), "Codon adaptation index (CAI)",
-        "Against a simplified E. coli K-12 codon table.",
-    )
-    render_figure(
-        cols[2], fmt(f["mrna_folding_stability"]), f"5' folding proxy, kcal/mol ({FOLDING_WINDOW_NT} nt)",
-        "GC-derived proxy, not a thermodynamic MFE. No folding model is evaluated.",
-    )
-    render_figure(
-        cols[3], fmt(gravy_score), "GRAVY (hydrophobicity)",
-        "Grand average of hydropathy over the translated product.",
-    )
-    render_figure(cols[4], fmt(pi_value), "Isoelectric point (pI)", "Of the translated product.")
-
-    # Second row: the features added after the Welch analysis. They are measured
-    # on every construct and shown, but the deployed artifact was fitted before
-    # they existed, so they do not yet enter the prediction.
-    st.markdown("###### Additional measures")
-    extra = st.columns(5)
-    render_figure(
-        extra[0], fmt(f.get("gc3_content"), "%"), "GC3, wobble position",
-        "GC at the third base of each codon. The strongest single predictor of yield "
-        "on Welch's synonymous variants.",
-    )
-    render_figure(
-        extra[1], fmt(f.get("rare_codon_fraction")), "Rare codon fraction",
-        "Share of slowly-read codons. A moderate share is associated with higher yield, "
-        "not lower.",
-    )
-    render_figure(
-        extra[2], fmt(f.get("genewide_folding_avg")), "Folding energy, kcal/mol",
-        f"Real ViennaRNA minimum free energy, averaged over {FOLDING_AVG_WINDOW_NT} nt sliding "
-        "windows. Unlike the proxy above, an actual thermodynamic fold.",
-    )
-
-    if f.get("genewide_folding_avg") is None or (
-        isinstance(f.get("genewide_folding_avg"), float) and np.isnan(f["genewide_folding_avg"])
-    ):
-        st.caption(
+    if _is_blank(f.get("genewide_folding_avg")):
+        ui.note(
             "Folding energy reads N/A because ViennaRNA is not installed. Install it with "
             "`pip install ViennaRNA` to compute real folding energies."
         )
-
-    if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in (gravy_score, pi_value)):
-        st.caption(
+    if _is_blank(f.get("gravy_score")) or _is_blank(f.get("pI")):
+        ui.note(
             "GRAVY and pI read N/A because the sequence could not be translated to a standard "
-            "amino-acid string. The diagnostics below that depend on them are therefore omitted."
+            "amino acid string, so the diagnostics that depend on them are omitted."
         )
+
+
+def _is_blank(value) -> bool:
+    return value is None or (isinstance(value, float) and np.isnan(value))
 
 
 def render_diagnostics(res: dict) -> None:
@@ -677,18 +749,41 @@ def render_redesign_verdict(result) -> None:
 
 
 def render_redesign_evidence(result) -> None:
-    """The feature movement, the changed codons and the search trace."""
-    st.markdown("#### What changed")
-    st.caption(
-        "Only the features a codon swap can move are listed. GRAVY and the isoelectric point are "
-        "identical by construction and are therefore left out."
-    )
-    st.dataframe(result.feature_comparison(), hide_index=True, use_container_width=True)
+    """
+    What changed, drawn before it is tabulated.
 
-    changed = result.changed_codon_table()
-    if not changed.empty:
-        with st.expander(f"The {len(changed)} codons that changed", expanded=False):
-            st.dataframe(changed, hide_index=True, use_container_width=True)
+    The engine already guarantees the protein is unchanged and checks it on
+    every candidate. Two aligned tracks make that guarantee visible: at every
+    outlined position the amino acid in both tooltips is the same. The old
+    layout printed the two sequences as separate text boxes and left the user
+    to diff them by eye.
+    """
+    conserved = sorted(result.conserved.locked) if result.conserved.locked else None
+
+    ui.section(
+        "What changed",
+        f"{result.codons_changed} of {result.codons_mutable} changeable codons moved. Original "
+        "above, redesigned below, with every change outlined.",
+    )
+    channel = sequence_map.channel_picker("redesign_channel")
+    sequence_map.render_diff(result.original.sequence, result.best.sequence, channel, conserved)
+    sequence_map.render_legend(result.original.sequence, conserved)
+
+    runs = sequence_map.changed_runs(result.original.sequence, result.best.sequence)
+    if not runs.empty:
+        st.dataframe(runs, hide_index=True, use_container_width=True)
+        ui.note(
+            "The amino acid column is the proof the protein did not move: every run encodes the "
+            "same residues before and after."
+        )
+
+    ui.section("The evidence")
+    with st.expander("Feature movement", expanded=False):
+        st.caption(
+            "Only the features a codon swap can move. GRAVY and the isoelectric point are "
+            "identical by construction and are left out."
+        )
+        st.dataframe(result.feature_comparison(), hide_index=True, use_container_width=True)
 
     with st.expander("Search trace", expanded=False):
         st.caption(
@@ -698,13 +793,20 @@ def render_redesign_evidence(result) -> None:
         )
         st.line_chart(pd.DataFrame({"Best objective": result.history}))
 
-    st.markdown("#### Redesigned sequence")
-    st.text_area(
-        "Optimised coding DNA, 5' to 3'", value=result.best.sequence, height=160, disabled=True,
-    )
+    with st.expander("How this objective has behaved on measured data", expanded=False):
+        render_calibration_notice()
+
+    with st.expander("The redesigned sequence", expanded=False):
+        st.text_area(
+            "Optimised coding DNA, 5' to 3'", value=result.best.sequence, height=160, disabled=True,
+        )
+
     st.download_button(
         "Download the redesigned sequence (FASTA)",
-        data=f">synthbio_redesign codons_changed={result.codons_changed}\n{result.best.sequence}\n",
+        data=(
+            f">synthbio_redesign codons_changed={result.codons_changed}\n"
+            f"{result.best.sequence}\n"
+        ),
         file_name="synthbio_redesign.fasta",
         mime="text/plain",
     )
@@ -733,7 +835,6 @@ def render_redesign(normalised: str, model, res: dict) -> None:
         )
         return
 
-    render_calibration_notice()
     controls = render_redesign_controls(normalised)
 
     run_key = (
@@ -813,12 +914,17 @@ def main():
         initial_sidebar_state="expanded",
     )
 
+    ui.inject_css()
+
     model, explainer, training_ranges = load_trained_artifacts()
     prov = prov_mod.describe(model, MODEL_PATH if model is not None else None)
 
     # Sidebar
     st.sidebar.header("Settings")
-    st.sidebar.selectbox("Target host", ["Escherichia coli (K-12)", "Escherichia coli (BL21)"], index=0)
+    st.sidebar.caption(
+        "Host: Escherichia coli. The codon table, the training data and every gate in this "
+        "project are E. coli, so there is nothing here to choose."
+    )
     st.sidebar.markdown("**Prediction source**")
     st.sidebar.write(prov.mode_label)
     if prov.is_trained:
@@ -830,9 +936,9 @@ def main():
         st.sidebar.caption("Train a model with the pipeline to replace the heuristic rules.")
 
     st.title("SynthBio: Construct Failure Predictor")
-    st.markdown(
-        "Predicts *E. coli* expression tier and construct failure risk from five computed features: "
-        "GC content, codon adaptation index, a 5' folding proxy, GRAVY and isoelectric point."
+    ui.note(
+        "Four narrow models read a coding sequence, each answers one question, and a critic says "
+        "what they agree on. Any of them may decline, and declining is an answer."
     )
 
     # Input.
@@ -852,12 +958,27 @@ def main():
 
     sequence_input = ""
     if source == "Paste a sequence":
+        if st.session_state.get("sequence_box") is None:
+            st.session_state["sequence_box"] = ""
         sequence_input = st.text_area(
             "Coding DNA sequence, 5' to 3'",
-            value=SAMPLE_SEQUENCE,
+            key="sequence_box",
             height=130,
-            help="Must start at the start codon. A sample construct is pre-filled; replace it with your own.",
+            placeholder="Paste a coding sequence starting at ATG",
+            help="Must start at the start codon.",
         )
+        if not sequence_input.strip():
+            # An empty state that says what the tool does and offers a construct
+            # to try, rather than a pre filled sample that quietly becomes the
+            # thing being scored.
+            ui.note(
+                "Nothing to score yet. Paste a coding sequence, fetch one by accession, or load "
+                "the example below to see what the tool produces."
+            )
+            st.button(
+                "Load an example construct",
+                on_click=lambda: st.session_state.update(sequence_box=SAMPLE_SEQUENCE),
+            )
     else:
         # The examples are single-gene records on purpose. An earlier revision
         # offered NC_000913, the E. coli K-12 chromosome, which fetches 4.6 Mb
@@ -898,7 +1019,15 @@ def main():
         with st.expander(f"Sequence preview ({len(normalised)} nt)", expanded=False):
             st.text_area("Normalised sequence", value=normalised, height=120, disabled=True)
 
-    run_btn = st.button("Analyse construct", type="primary")
+    # An untouched box is not a mistake, so an empty input says nothing. The
+    # validation messages appear the moment there is something to validate, and
+    # they appear above the button so they are read before the person acts.
+    if issues and sequence_input.strip():
+        render_validation_issues(issues)
+
+    run_btn = st.button(
+        "Analyse construct", type="primary", disabled=not is_scorable(issues) or not normalised
+    )
 
     # Gate the run on an explicit click. The sequence box ships with a sample,
     # so without this the app would predict on page load and the button would
@@ -908,18 +1037,14 @@ def main():
         st.session_state["analysed_sequence"] = normalised
 
     if not st.session_state.get("analysis_requested"):
-        st.info("Enter a sequence and select Analyse construct to score it.", icon="ℹ️")
+        if normalised and is_scorable(issues):
+            ui.note("Ready. Select Analyse construct to score it.")
         return
 
     # A sequence edited after the last run should not silently show stale results.
     if st.session_state.get("analysed_sequence") != normalised:
         st.info("The sequence has changed since the last analysis. Select Analyse construct to rescore.", icon="ℹ️")
         return
-
-    st.divider()
-
-    if issues:
-        render_validation_issues(issues)
 
     if not is_scorable(issues):
         st.caption("Scoring is withheld until the problems above are resolved, so that no figure is shown "
@@ -928,14 +1053,15 @@ def main():
 
     logger.info(f"Running prediction for {len(normalised)} nt sequence...")
     try:
-        res = predict_construct(
-            normalised,
-            model=model,
-            explainer=explainer,
-            feature_ranges=training_ranges,
-            mode=MODE_AGENTS,
-            leader_5prime=leader or None,
-        )
+        with st.spinner("Computing features, folding the transcript and asking the agents..."):
+            res = predict_construct(
+                normalised,
+                model=model,
+                explainer=explainer,
+                feature_ranges=training_ranges,
+                mode=MODE_AGENTS,
+                leader_5prime=leader or None,
+            )
         logger.info(
             f"Prediction complete -> Risk: {res['risk_score']}%, Tier: {res['predicted_tier']}, "
             f"Tier midpoint: {res['predicted_yield']}"
@@ -952,28 +1078,81 @@ def main():
     diagnosis_tab, redesign_tab = st.tabs(["Diagnosis", "Redesign"])
 
     with diagnosis_tab:
-        render_diagnosis(res, prov, model)
+        render_diagnosis(res, prov, model, normalised)
         render_agent_panel(res.get("critic_verdict"))
 
     with redesign_tab:
         render_redesign(normalised, model, res)
 
 
-def render_diagnosis(res: dict, prov, model) -> None:
-    """Vertical hierarchy: verdict, features, diagnostics, attribution."""
+def render_diagnosis(res: dict, prov, model, sequence: str) -> None:
+    """
+    Three depths: the verdict, why, and the evidence.
+
+    Depth one is the verdict band and one action. Depth two is the sequence
+    map, the features that moved this answer, and the agent strip. Depth three
+    is everything auditable, behind expanders, because a reader who wants it is
+    in the minority and should not pay for it in scroll.
+
+    Nothing was deleted on the way. Every caveat that used to sit between
+    sections now sits under the figure it qualifies, which is where it gets
+    read rather than skipped.
+    """
+    verdict = res.get("critic_verdict")
+
     render_verdict(res, prov)
-    st.divider()
-    render_features(res)
-    st.divider()
-    render_diagnostics(res)
-    st.divider()
 
-    st.markdown("#### Model attribution")
-    feat_df = res.get("feat_df")
-    if feat_df is None:
-        feat_df = build_feature_row(res["features"])
-    render_shap_waterfall(model, feat_df, predicted_class=res.get("predicted_score"))
+    ui.section(
+        "Your construct",
+        "One cell per codon. Hover for the codon, its amino acid and the value behind the colour.",
+    )
+    channel = sequence_map.channel_picker("diagnosis_channel")
+    sequence_map.render_track(sequence, channel, key="diagnosis_track")
+    sequence_map.render_legend(sequence)
 
+    render_drivers(res, verdict)
+
+    if verdict is not None:
+        ui.section(
+            "The agents",
+            "Four narrow models, each with one question and the right to decline.",
+        )
+        agents_view.render_strip(verdict)
+        ui.note(verdict.explanation)
+        agents_view.render_how_it_works(verdict)
+
+    ui.section("The evidence", "Everything the verdict above rests on.")
+
+    with st.expander("All computed features", expanded=False):
+        render_features(res)
+
+    with st.expander("Model attribution for this construct", expanded=False):
+        st.caption(
+            "Signed SHAP values for the predicted tier: positive pushed the model towards the "
+            "tier it chose, negative pushed away."
+        )
+        feat_df = res.get("feat_df")
+        if feat_df is None:
+            feat_df = build_feature_row(res["features"])
+        render_shap_waterfall(model, feat_df, predicted_class=res.get("predicted_score"))
+
+    if verdict is not None:
+        with st.expander("Each agent in detail, with its gate", expanded=False):
+            agents_view.render_detail(verdict)
+
+    with st.expander("Biological heuristics, which are rules rather than models", expanded=False):
+        render_diagnostics(res)
+
+    with st.expander("Where these figures came from", expanded=False):
+        st.caption(prov.as_line())
+        for line in prov.caveats():
+            st.caption(line)
+        if verdict is not None:
+            st.caption(
+                f"Agreement: {verdict.agreement.as_line()}. Conflict threshold "
+                + ("fitted on the reserved critic pool." if verdict.thresholds_fitted
+                   else "declared, not fitted, because no critic has been trained.")
+            )
 
 
 if __name__ == "__main__":
